@@ -1,0 +1,11 @@
+build/
+install/
+log/
+worlds/
+experiments/runs/
+__pycache__/
+*.pyc
+
+# Local working state, not part of the artifact
+PROJECT_INSTRUCTIONS.md
+HANDOFF.md

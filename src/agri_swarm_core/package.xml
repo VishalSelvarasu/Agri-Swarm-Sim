@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agri_swarm_core</name>
+  <version>0.1.0</version>
+  <description>Detector noise model, energy monitor, field generator, metrics logger.</description>
+  <maintainer email="you@example.com">Vishal Selvarasu</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>agri_swarm_msgs</exec_depend>
+
+  <export><build_type>ament_python</build_type></export>
+</package>

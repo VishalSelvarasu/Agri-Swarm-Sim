@@ -1,0 +1,135 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="agri_bot">
+
+  <xacro:arg name="prefix" default=""/>
+  <xacro:arg name="use_lidar" default="false"/>
+  <xacro:property name="P" value="$(arg prefix)"/>
+
+  <xacro:property name="body_l" value="0.36"/>
+  <xacro:property name="body_w" value="0.24"/>
+  <xacro:property name="body_h" value="0.12"/>
+  <xacro:property name="wheel_r" value="0.065"/>
+  <xacro:property name="wheel_w" value="0.04"/>
+  <xacro:property name="wheel_sep" value="0.30"/>
+  <xacro:property name="mass" value="6.0"/>
+
+  <xacro:macro name="box_inertia" params="m x y z">
+    <inertial>
+      <mass value="${m}"/>
+      <inertia ixx="${m*(y*y+z*z)/12}" ixy="0" ixz="0"
+               iyy="${m*(x*x+z*z)/12}" iyz="0"
+               izz="${m*(x*x+y*y)/12}"/>
+    </inertial>
+  </xacro:macro>
+
+  <link name="${P}base_link">
+    <xacro:box_inertia m="${mass}" x="${body_l}" y="${body_w}" z="${body_h}"/>
+    <visual>
+      <geometry><box size="${body_l} ${body_w} ${body_h}"/></geometry>
+      <material name="chassis"><color rgba="0.15 0.35 0.75 1"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="${body_l} ${body_w} ${body_h}"/></geometry>
+    </collision>
+  </link>
+
+  <xacro:macro name="wheel" params="side reflect">
+    <link name="${P}${side}_wheel">
+      <inertial>
+        <mass value="0.35"/>
+        <inertia ixx="0.0006" ixy="0" ixz="0" iyy="0.0006" iyz="0" izz="0.001"/>
+      </inertial>
+      <visual>
+        <origin rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="${wheel_r}" length="${wheel_w}"/></geometry>
+        <material name="tyre"><color rgba="0.1 0.1 0.1 1"/></material>
+      </visual>
+      <collision>
+        <origin rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="${wheel_r}" length="${wheel_w}"/></geometry>
+      </collision>
+    </link>
+    <joint name="${P}${side}_wheel_joint" type="continuous">
+      <parent link="${P}base_link"/>
+      <child link="${P}${side}_wheel"/>
+      <origin xyz="0 ${reflect*wheel_sep/2} 0"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:wheel side="left"  reflect="1"/>
+  <xacro:wheel side="right" reflect="-1"/>
+
+  <link name="${P}caster">
+    <inertial>
+      <mass value="0.1"/>
+      <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+    </inertial>
+    <visual><geometry><sphere radius="${wheel_r*0.5}"/></geometry></visual>
+    <collision><geometry><sphere radius="${wheel_r*0.5}"/></geometry></collision>
+  </link>
+  <joint name="${P}caster_joint" type="fixed">
+    <parent link="${P}base_link"/>
+    <child link="${P}caster"/>
+    <origin xyz="${-body_l/2 + 0.05} 0 ${-wheel_r*0.5}"/>
+  </joint>
+
+  <gazebo reference="${P}caster">
+    <mu1>0.0</mu1><mu2>0.0</mu2>
+  </gazebo>
+  <gazebo reference="${P}left_wheel">
+    <mu1>1.2</mu1><mu2>1.2</mu2>
+  </gazebo>
+  <gazebo reference="${P}right_wheel">
+    <mu1>1.2</mu1><mu2>1.2</mu2>
+  </gazebo>
+
+  <gazebo>
+    <!-- Topics are left at the DiffDrive defaults, which resolve to
+         /model/<spawn_name>/cmd_vel and /model/<spawn_name>/odometry.
+         Do not hardcode them here; the bridge remaps into the namespace. -->
+    <plugin filename="gz-sim-diff-drive-system"
+            name="gz::sim::systems::DiffDrive">
+      <left_joint>${P}left_wheel_joint</left_joint>
+      <right_joint>${P}right_wheel_joint</right_joint>
+      <wheel_separation>${wheel_sep}</wheel_separation>
+      <wheel_radius>${wheel_r}</wheel_radius>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <frame_id>${P}odom</frame_id>
+      <child_frame_id>${P}base_link</child_frame_id>
+      <max_linear_acceleration>1.5</max_linear_acceleration>
+    </plugin>
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher"/>
+  </gazebo>
+
+  <xacro:if value="$(arg use_lidar)">
+    <link name="${P}lidar_link">
+      <inertial>
+        <mass value="0.1"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+      <visual><geometry><cylinder radius="0.03" length="0.04"/></geometry></visual>
+    </link>
+    <joint name="${P}lidar_joint" type="fixed">
+      <parent link="${P}base_link"/>
+      <child link="${P}lidar_link"/>
+      <origin xyz="${body_l/2 - 0.04} 0 ${body_h/2 + 0.02}"/>
+    </joint>
+    <gazebo reference="${P}lidar_link">
+      <sensor name="lidar" type="gpu_lidar">
+        <update_rate>10</update_rate>
+        <topic>scan</topic>
+        <gz_frame_id>${P}lidar_link</gz_frame_id>
+        <lidar>
+          <scan><horizontal>
+            <samples>270</samples>
+            <min_angle>-2.36</min_angle><max_angle>2.36</max_angle>
+          </horizontal></scan>
+          <range><min>0.1</min><max>6.0</max><resolution>0.01</resolution></range>
+        </lidar>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+</robot>

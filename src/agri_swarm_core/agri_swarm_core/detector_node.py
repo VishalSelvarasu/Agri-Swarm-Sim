@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+import csv
+import math
+import random
+
+import rclpy
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+
+from agri_swarm_msgs.msg import WeedDetection
+
+
+class DetectorNode(Node):
+
+    def __init__(self):
+        super().__init__("detector")
+
+        self.declare_parameter("robot_id", "robot_0")
+        self.declare_parameter("ground_truth_csv", "")
+        self.declare_parameter("seed", 0)
+
+        # --- sensor geometry ---
+        self.declare_parameter("sensor_range", 1.6)      # [m]
+        self.declare_parameter("sensor_fov", 1.4)        # [rad], forward cone
+        self.declare_parameter("rate_hz", 5.0)
+
+        # --- noise model (the experiment axes) ---
+        self.declare_parameter("recall_near", 0.95)      # P(detect) at range 0
+        self.declare_parameter("recall_far", 0.55)       # P(detect) at max range
+        self.declare_parameter("fp_per_sec", 0.25)       # spurious detections/s
+        self.declare_parameter("position_sigma", 0.03)   # [m]
+
+        # Beta shape params. TP mean = a/(a+b).
+        self.declare_parameter("conf_tp_alpha", 6.0)     # TP mean ~0.75
+        self.declare_parameter("conf_tp_beta", 2.0)
+        self.declare_parameter("conf_fp_alpha", 2.0)     # FP mean ~0.40 -> OVERLAP
+        self.declare_parameter("conf_fp_beta", 3.0)
+
+        g = lambda n: self.get_parameter(n).value
+        self.robot_id = g("robot_id")
+        self.range = float(g("sensor_range"))
+        self.fov = float(g("sensor_fov"))
+        self.recall_near = float(g("recall_near"))
+        self.recall_far = float(g("recall_far"))
+        self.fp_per_sec = float(g("fp_per_sec"))
+        self.pos_sigma = float(g("position_sigma"))
+        self.tp_a, self.tp_b = float(g("conf_tp_alpha")), float(g("conf_tp_beta"))
+        self.fp_a, self.fp_b = float(g("conf_fp_alpha")), float(g("conf_fp_beta"))
+
+        # Per-robot stream derived from the global seed. Two robots must not
+        # share a stream, and a rerun of the same config must reproduce.
+        self.rng = random.Random(f"{g('seed')}::{self.robot_id}")
+
+        self.weeds = self._load_oracle(g("ground_truth_csv"))
+        self.get_logger().info(
+            f"{self.robot_id}: oracle has {len(self.weeds)} patches")
+
+        self.pose = None          # (x, y, yaw)
+        self.dt = 1.0 / float(g("rate_hz"))
+
+        self.pub = self.create_publisher(WeedDetection, "/weed_detections", 20)
+        self.create_subscription(Odometry, "odom", self._on_odom, 10)
+        self.create_timer(self.dt, self._tick)
+
+    # ------------------------------------------------------------------
+
+    def _load_oracle(self, path):
+        if not path:
+            raise RuntimeError("ground_truth_csv parameter is required")
+        out = []
+        with open(path) as f:
+            for row in csv.DictReader(f):
+                out.append({
+                    "id": int(row["id"]),
+                    "x": float(row["x"]),
+                    "y": float(row["y"]),
+                    "radius": float(row["radius"]),
+                })
+        return out
+
+    def _on_odom(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.pose = (p.x, p.y, yaw)
+
+    # ------------------------------------------------------------------
+
+    def _in_view(self, wx, wy):
+        x, y, yaw = self.pose
+        dx, dy = wx - x, wy - y
+        r = math.hypot(dx, dy)
+        if r > self.range:
+            return None
+        bearing = math.atan2(dy, dx) - yaw
+        bearing = math.atan2(math.sin(bearing), math.cos(bearing))
+        if abs(bearing) > self.fov / 2.0:
+            return None
+        return r
+
+    def _recall_at(self, r):
+        t = min(1.0, max(0.0, r / self.range))
+        return self.recall_near + t * (self.recall_far - self.recall_near)
+
+    def _emit(self, patch_id, x, y, radius, confidence):
+        m = WeedDetection()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = "map"
+        m.patch_id = patch_id
+        m.observer_id = self.robot_id
+        m.position.x = x + self.rng.gauss(0.0, self.pos_sigma)
+        m.position.y = y + self.rng.gauss(0.0, self.pos_sigma)
+        m.position.z = 0.0
+        m.radius = float(radius)
+        m.confidence = float(min(1.0, max(0.0, confidence)))
+        self.pub.publish(m)
+
+    def _tick(self):
+        if self.pose is None:
+            return
+
+        # True positives (and misses).
+        for w in self.weeds:
+            r = self._in_view(w["x"], w["y"])
+            if r is None:
+                continue
+            # Per-tick trial. Longer dwell => more chances, which is the
+            # intended coupling between speed and recall.
+            if self.rng.random() < self._recall_at(r) * self.dt:
+                conf = self.rng.betavariate(self.tp_a, self.tp_b)
+                self._emit(w["id"], w["x"], w["y"], w["radius"], conf)
+
+        # False positives: bare soil reported as weed. patch_id = 2**32-1
+        # marks "no oracle correspondence" for the offline scorer.
+        if self.rng.random() < self.fp_per_sec * self.dt:
+            x, y, yaw = self.pose
+            b = yaw + self.rng.uniform(-self.fov / 2.0, self.fov / 2.0)
+            d = self.rng.uniform(0.2, self.range)
+            conf = self.rng.betavariate(self.fp_a, self.fp_b)
+            self._emit(0xFFFFFFFF, x + d * math.cos(b), y + d * math.sin(b),
+                       self.rng.uniform(0.05, 0.12), conf)
+
+
+def main():
+    rclpy.init()
+    node = DetectorNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()

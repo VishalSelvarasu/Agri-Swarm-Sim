@@ -1,0 +1,61 @@
+experiment:
+  name: base
+  n_seeds: 20                 # report median + IQR, never a single run
+  seeds: range(0, 20)
+  timeout_s: 900              # hard cap; a run that hits it is logged as such
+
+field:
+  n_rows: 10
+  row_length: 30.0
+  row_spacing: 0.75
+  weed_density: 0.35          # weeds / m^2
+  intra_row_fraction: 0.7
+
+swarm:
+  n_robots: 4                 # scalability sweep overrides: 4, 8, 12
+  energy_capacity_j: 40000.0
+  energy_per_m_j: 12.0
+  treat_cost_j: 30.0
+  reserve_fraction: 0.15
+
+detector:
+  recall_near: 0.95
+  recall_far: 0.55
+  fp_per_sec: 0.25
+  position_sigma: 0.03
+  # The TP/FP confidence distributions OVERLAP on purpose. Separable
+  # distributions make confidence-weighted bidding win trivially.
+  conf_tp_alpha: 6.0
+  conf_tp_beta: 2.0
+  conf_fp_alpha: 2.0
+  conf_fp_beta: 3.0
+
+auction:
+  bid_mode: confidence_energy # ablation: distance | confidence_energy
+  task_cell_size: 0.30        # must exceed detector.position_sigma comfortably
+  bid_window_s: 0.6
+  award_grace_s: 1.2
+  max_rounds: 4
+  confidence_gamma: 1.5
+
+# ---------------------------------------------------------------------------
+# Metrics. Note what is NOT here: "% herbicide reduction vs blanket spraying".
+# That number is arithmetic -- with weed coverage around 8% of field area, any
+# working system reports ~90% reduction, including a hardcoded waypoint list.
+# The defensible result is the trade-off CURVE below, swept over
+# treat_confidence_threshold.
+# ---------------------------------------------------------------------------
+metrics:
+  primary:
+    - weeds_treated_frac         # recall of the whole pipeline
+    - false_positive_treatments  # herbicide wasted on bare soil
+    - mission_time_s
+    - total_energy_j
+  secondary:
+    - time_to_95_coverage_s
+    - split_brain_events         # allocator disagreements; expect > 0
+    - tasks_abandoned            # hit max_rounds
+    - reallocation_count
+
+sweeps:
+  treat_confidence_threshold: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
