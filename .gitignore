@@ -9,3 +9,7 @@ __pycache__/
 # Local working state, not part of the artifact
 PROJECT_INSTRUCTIONS.md
 HANDOFF.md
+compile_commands.json
+frames_*.gv
+frames_*.pdf
+.vscode/
