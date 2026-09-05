@@ -32,6 +32,12 @@ class LaneFollower(Node):
         self.declare_parameter("v_nom", 0.6)
         self.declare_parameter("omega_max", 1.2)
         self.declare_parameter("lookahead_m", 0.7)
+        # gz DiffDrive publishes odometry starting at (0, 0) at the SPAWN
+        # POINT, but lane_waypoints() returns world coordinates. Without this
+        # offset every robot drives laterally to its lane's world y, straight
+        # through the crop rows, then reports "lane sweep complete".
+        self.declare_parameter("origin_x", 0.0)
+        self.declare_parameter("origin_y", 0.0)
 
         idx = self.get_parameter("robot_index").value
         n = self.get_parameter("n_robots").value
@@ -45,10 +51,15 @@ class LaneFollower(Node):
             lookahead_m=self.get_parameter("lookahead_m").value,
         )
 
+        ox = self.get_parameter("origin_x").value
+        oy = self.get_parameter("origin_y").value
+
         lanes = load_lanes(lanes_csv)
         mine = assign_lanes(len(lanes), n, idx)
-        self.path = lane_waypoints(
+        world_path = lane_waypoints(
             lanes, mine, step_m=self.get_parameter("waypoint_step_m").value)
+        # World -> odom. Spawn yaw is zero, so this is a pure translation.
+        self.path = [(x - ox, y - oy) for x, y in world_path]
         self.index = 0
         self.pose = None
         self.done = False
@@ -56,7 +67,14 @@ class LaneFollower(Node):
         clearance = lane_clearance_m()
         self.get_logger().info(
             f"robot {idx}/{n}: lanes {mine}, {len(self.path)} waypoints, "
+            f"origin ({ox:+.2f}, {oy:+.2f}), first waypoint in odom "
+            f"({self.path[0][0]:+.2f}, {self.path[0][1]:+.2f}), "
             f"lane clearance {clearance * 100:.1f} cm per side")
+        if abs(self.path[0][1]) > 0.5:
+            self.get_logger().error(
+                f"first waypoint is {self.path[0][1]:+.2f} m LATERAL in odom. "
+                "The robot will drive across crop rows to reach it. "
+                "origin_y does not match the spawn pose.")
         if clearance <= 0.05:
             self.get_logger().warn(
                 "lane clearance is under 5 cm. Any odometry drift puts a wheel "
