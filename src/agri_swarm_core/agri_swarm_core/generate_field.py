@@ -6,10 +6,6 @@ import os
 import random
 
 
-# --------------------------------------------------------------------------
-# Geometry
-# --------------------------------------------------------------------------
-
 def build_field(cfg, rng):
     """Return (rows, weeds). Pure function of rng state."""
     rows = []
@@ -43,10 +39,6 @@ def build_field(cfg, rng):
 
     return rows, lanes, weeds
 
-
-# --------------------------------------------------------------------------
-# SDF emission
-# --------------------------------------------------------------------------
 
 CROP_ROW_LINK = """
       <link name="crop_row_{i}">
@@ -161,7 +153,6 @@ def emit_sdf(cfg, rows, weeds):
 """
 
 
-# --------------------------------------------------------------------------
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,

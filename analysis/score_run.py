@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
+from __future__ import annotations
 import argparse
 import csv
 import math
@@ -77,11 +77,28 @@ def match_treatments(
     which is the safe direction to be wrong in.
     """
     pairs = []
+    candidates_by_treatment: Dict[int, List[Weed]] = {}
     for ti, t in enumerate(treatments):
         for w in weeds:
             d = math.dist((t.x, t.y), (w.x, w.y))
             if d <= match_radius_m + w.radius:
                 pairs.append((d, ti, w.id))
+                candidates_by_treatment.setdefault(ti, []).append(w)
+
+    # A scorer must never silently let one treatment bridge two crop rows.
+    # With the synthetic field geometry, weeds from one row occupy a narrow
+    # lateral band; candidates spanning more than two match radii indicate that
+    # the tolerance is wide enough to make row identity ambiguous.
+    for ti, candidates in candidates_by_treatment.items():
+        if len(candidates) < 2:
+            continue
+        y_span = max(w.y for w in candidates) - min(w.y for w in candidates)
+        assert y_span <= 2.0 * match_radius_m + 1e-9, (
+            f"treatment {ti} at ({treatments[ti].x:.3f}, {treatments[ti].y:.3f}) "
+            f"can match weeds spanning {y_span:.3f} m laterally; "
+            f"match_radius_m={match_radius_m:.3f} can bridge crop rows"
+        )
+
     pairs.sort(key=lambda p: (p[0], p[1], p[2]))
 
     assignment: Dict[int, Optional[int]] = {ti: None for ti in range(len(treatments))}
@@ -178,7 +195,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--treatments", required=True)
     p.add_argument("--thresholds", type=float, nargs="+",
                    default=[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
-    p.add_argument("--match-radius", type=float, default=0.25,
+    p.add_argument("--match-radius", type=float, default=0.20,
                    help="Metres, added to each weed's own radius. Should exceed "
                         "detector position_sigma by a healthy margin.")
     p.add_argument("--out", default=None, help="Write the curve CSV here.")
