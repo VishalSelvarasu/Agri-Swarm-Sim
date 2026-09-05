@@ -1,12 +1,3 @@
-// Standalone test for utility.hpp. No ROS, no gtest -- builds with:
-//
-//     g++ -std=c++17 -Wall -Wextra -Werror
-//         -Isrc/agri_swarm_allocation/include
-//         src/agri_swarm_allocation/test/test_utility.cpp -o /tmp/test_utility
-//
-// The point is that this runs in CI on a box with no ROS 2 installed, which is
-// the only reason any part of this repo is currently machine-verified.
-
 #include <cstdio>
 #include <cstdlib>
 #include <string>
