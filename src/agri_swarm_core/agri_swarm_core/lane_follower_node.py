@@ -22,6 +22,14 @@ def yaw_from_quaternion(q) -> float:
 
 
 class LaneFollower(Node):
+    """Drives one robot's assigned lanes, in world frame.
+
+    Frame convention, shared with allocator_node.cpp and task_executor_node.py:
+    gz DiffDrive odometry reads (0, 0) at the spawn point, so the pose is lifted
+    into world frame on arrival with world = origin + odom. Paths, task
+    positions and every distance stay in world coordinates throughout.
+    """
+
     def __init__(self):
         super().__init__("lane_follower")
 
@@ -32,10 +40,8 @@ class LaneFollower(Node):
         self.declare_parameter("v_nom", 0.6)
         self.declare_parameter("omega_max", 1.2)
         self.declare_parameter("lookahead_m", 0.7)
-        # gz DiffDrive publishes odometry starting at (0, 0) at the SPAWN
-        # POINT, but lane_waypoints() returns world coordinates. Without this
-        # offset every robot drives laterally to its lane's world y, straight
-        # through the crop rows, then reports "lane sweep complete".
+        # Spawn pose, supplied by the launch file. See the frame convention
+        # above; without it the odometry origin is mistaken for the world one.
         self.declare_parameter("origin_x", 0.0)
         self.declare_parameter("origin_y", 0.0)
 
@@ -51,30 +57,32 @@ class LaneFollower(Node):
             lookahead_m=self.get_parameter("lookahead_m").value,
         )
 
-        ox = self.get_parameter("origin_x").value
-        oy = self.get_parameter("origin_y").value
+        self.origin_x = self.get_parameter("origin_x").value
+        self.origin_y = self.get_parameter("origin_y").value
 
         lanes = load_lanes(lanes_csv)
         mine = assign_lanes(len(lanes), n, idx)
-        world_path = lane_waypoints(
+        # World frame, used as-is. The pose is lifted to match in on_odom().
+        self.path = lane_waypoints(
             lanes, mine, step_m=self.get_parameter("waypoint_step_m").value)
-        # World -> odom. Spawn yaw is zero, so this is a pure translation.
-        self.path = [(x - ox, y - oy) for x, y in world_path]
         self.index = 0
         self.pose = None
         self.done = False
+        self.checked_first_pose = False
 
         clearance = lane_clearance_m()
         self.get_logger().info(
             f"robot {idx}/{n}: lanes {mine}, {len(self.path)} waypoints, "
-            f"origin ({ox:+.2f}, {oy:+.2f}), first waypoint in odom "
+            f"origin ({self.origin_x:+.2f}, {self.origin_y:+.2f}), "
+            f"first waypoint in world "
             f"({self.path[0][0]:+.2f}, {self.path[0][1]:+.2f}), "
             f"lane clearance {clearance * 100:.1f} cm per side")
-        if abs(self.path[0][1]) > 0.5:
+        if idx != 0 and self.origin_x == 0.0 and self.origin_y == 0.0:
             self.get_logger().error(
-                f"first waypoint is {self.path[0][1]:+.2f} m LATERAL in odom. "
-                "The robot will drive across crop rows to reach it. "
-                "origin_y does not match the spawn pose.")
+                f"robot {idx} has origin_x = origin_y = 0. Odometry is "
+                "spawn-relative, so the pose will be wrong by the spawn offset "
+                "and the robot will drive across crop rows. The launch file is "
+                "not passing the spawn pose.")
         if clearance <= 0.05:
             self.get_logger().warn(
                 "lane clearance is under 5 cm. Any odometry drift puts a wheel "
@@ -86,8 +94,25 @@ class LaneFollower(Node):
 
     def on_odom(self, msg: Odometry):
         p = msg.pose.pose
-        self.pose = Pose2D(p.position.x, p.position.y,
+        self.pose = Pose2D(self.origin_x + p.position.x,
+                           self.origin_y + p.position.y,
                            yaw_from_quaternion(p.orientation))
+
+        if not self.checked_first_pose:
+            self.checked_first_pose = True
+            lateral = abs(self.path[0][1] - self.pose.y)
+            self.get_logger().info(
+                f"first pose: world ({self.pose.x:+.3f}, {self.pose.y:+.3f}) "
+                f"= odom ({p.position.x:+.3f}, {p.position.y:+.3f}) "
+                f"+ origin ({self.origin_x:+.3f}, {self.origin_y:+.3f}); "
+                f"lateral offset to first waypoint {lateral:.3f} m")
+            # Reaching the first waypoint must be a longitudinal move. A large
+            # lateral offset means the robot would cross crop rows to start.
+            if lateral > 0.5:
+                self.get_logger().error(
+                    f"first waypoint is {lateral:.2f} m LATERAL of the spawn "
+                    "pose. The robot will drive across crop rows to reach it. "
+                    "origin_y does not match the spawn pose.")
 
     def tick(self):
         if self.pose is None or self.done:
@@ -117,9 +142,10 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.pub.publish(Twist())  # do not leave a robot driving
+        if rclpy.ok():
+            node.pub.publish(Twist())  # do not leave a robot driving
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

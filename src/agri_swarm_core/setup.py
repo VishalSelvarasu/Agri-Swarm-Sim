@@ -15,10 +15,13 @@ setup(
     maintainer='Vishal Selvarasu',
     license='Apache-2.0',
     entry_points={
-        'console_scripts': [
-            'detector_node = agri_swarm_core.detector_node:main',
-            'generate_field = agri_swarm_core.generate_field:main',
-            'lane_follower_node = agri_swarm_core.lane_follower_node:main',
+'console_scripts': [
+'detector_node = agri_swarm_core.detector_node:main',
+'generate_field = agri_swarm_core.generate_field:main',
+'lane_follower_node = agri_swarm_core.lane_follower_node:main',
+'task_executor_node = agri_swarm_core.task_executor_node:main',
+'treatment_logger_node = agri_swarm_core.treatment_logger_node:main',
+'energy_monitor_node = agri_swarm_core.energy_monitor_node:main',
         ],
     },
 )
