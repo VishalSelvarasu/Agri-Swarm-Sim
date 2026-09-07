@@ -13,6 +13,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Bid.msg"
   "msg/TaskAward.msg"
   "msg/RobotState.msg"
+  "msg/Treatment.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 
