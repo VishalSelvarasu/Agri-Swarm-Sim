@@ -225,7 +225,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--ground-truth", required=True)
     p.add_argument("--treatments", required=True)
     p.add_argument("--thresholds", type=float, nargs="+",
-                   default=[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
+                   default=[0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8])
     p.add_argument("--match-radius", type=float, default=0.20,
                    help="Metres, added to each weed's own radius. Should exceed "
                         "detector position_sigma by a healthy margin, and stay "
