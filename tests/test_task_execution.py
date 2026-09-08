@@ -415,12 +415,21 @@ def test_resume_never_jumps_to_the_end_of_the_sweep():
     """Observed live: robot_0 treated 4 of 95 queued tasks and stopped moving.
 
     index_ahead returned len(path) for a station behind the robot, which then
-    clamped to the final waypoint of the WHOLE sweep. The robot drove to the
+    clamped to the final waypoint of the WHOLE sweep: the robot drove to the
     end of the field and resumed there for every subsequent detour.
     """
     i = resume_after_station(SERPENTINE, station_x=5.0, current_index=2, direction=+1)
     assert i < len(SERPENTINE) - 1
-    assert i == 2                      # station behind: carry on where we were
+    assert SERPENTINE[i][1] == pytest.approx(-0.375)   # still in lane one
+
+
+def test_resume_is_measured_from_the_station_not_the_lookahead():
+    """The lane index tracks pure pursuit's lookahead, which runs ahead of the
+    robot. Resuming at it can pick a waypoint already behind the station, so
+    the robot turns back and burns the resume timeout instead of converging.
+    """
+    i = resume_after_station(SERPENTINE, station_x=5.0, current_index=2, direction=+1)
+    assert SERPENTINE[i][0] > 5.0
 
 
 def test_resume_stays_inside_the_current_lane():

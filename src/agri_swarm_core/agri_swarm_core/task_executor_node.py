@@ -387,7 +387,7 @@ class TaskExecutor(Node):
         self.detour = list(plan.waypoints)
         self.detour_index = 0
         # Never rewind the sweep: the lane index is monotone.
-        i = min(max(plan.resume_index, self.index), len(self.path) - 1)
+        i = min(plan.resume_index, len(self.path) - 1)
         self.resume_point = self.path[i]
         self.index = i
         return True

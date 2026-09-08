@@ -195,6 +195,22 @@ def resume_after_station(
     direction: int,
 ) -> int:
     """Index at which to rejoin the lane path after treating.
+
+    Measured from the STATION, not from the caller's lane index. The lane
+    index tracks pure pursuit's lookahead, which runs ahead of the robot, so
+    resuming at it can select a waypoint already behind the station: the robot
+    turns back, fails to converge, and burns the resume timeout.
+
+    Bounded by the end of the current lane. When nothing lies ahead of the
+    station within this lane, the robot rejoins at the lane's last waypoint.
+    """
+    if not waypoints:
+        raise ValueError("empty path")
+    current_index = min(max(current_index, 0), len(waypoints) - 1)
+    end = lane_segment_end(waypoints, current_index)
+    i = index_ahead(waypoints[:end + 1], station_x, direction, start=0)
+    return min(i, end)
+    """Index at which to rejoin the lane path after treating.
  
     Bounded by the end of the current lane. When the station lies beyond that
     -- behind the robot, or past the end of the sweep -- the robot rejoins
