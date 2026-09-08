@@ -17,6 +17,7 @@
 #include <agri_swarm_msgs/msg/robot_state.hpp>
 #include <agri_swarm_msgs/msg/task_announcement.hpp>
 #include <agri_swarm_msgs/msg/task_award.hpp>
+#include <agri_swarm_msgs/msg/treatment.hpp>
 #include <agri_swarm_msgs/msg/weed_detection.hpp>
  
 using namespace std::chrono_literals;
@@ -101,7 +102,7 @@ public:
     // service it and the mission does not terminate. The offline threshold
     // sweep in score_run.py is valid only from this value upward.
     treat_conf_threshold_ =
-      declare_parameter<double>("treat_confidence_threshold", 0.2);
+      declare_parameter<double>("treat_confidence_threshold", 0.5);
     origin_x_     = declare_parameter<double>("origin_x", 0.0);
     origin_y_     = declare_parameter<double>("origin_y", 0.0);
  
@@ -109,7 +110,10 @@ public:
     // do not depend on discovery order. The energy monitor must be launched
     // with the same value. The state-of-charge term and the reserve gate are
     // only informative if capacity is of the same order as mission consumption.
-    energy_capacity_j_ = declare_parameter<double>("energy_capacity_j", 40000.0);
+    energy_capacity_j_ = declare_parameter<double>("energy_capacity_j", 2000.0);
+    // Above roughly 5 concurrent commitments a robot queues faster than it can
+    // service, awards go stale, and the auction stops reflecting capacity.
+    max_committed_ = declare_parameter<int>("max_committed", 30);
  
     if (robot_id_ != "robot_0" && origin_x_ == 0.0 && origin_y_ == 0.0) {
       RCLCPP_WARN(get_logger(),
@@ -137,6 +141,8 @@ public:
       "/task_awards", qos, [this](M::TaskAward::SharedPtr m) { onAward(*m); });
     sub_state_ = create_subscription<M::RobotState>(
       "/robot_states", qos, [this](M::RobotState::SharedPtr m) { onState(*m); });
+    sub_treat_ = create_subscription<M::Treatment>(
+      "/treatments", qos, [this](M::Treatment::SharedPtr m) { onTreatment(*m); });
     sub_odom_ = create_subscription<nav_msgs::msg::Odometry>(
       "odom", 10, [this](nav_msgs::msg::Odometry::SharedPtr m) { onOdom(*m); });
  
@@ -249,9 +255,14 @@ private:
     // A fraction of the pack is reserved for the return leg. While the pack
     // state is unknown, feasibility is reported as true rather than being
     // decided against an unset capacity.
+    // A robot already holding max_committed tasks bids infeasible. Without
+    // this the swarm accepts work far faster than it can perform it.
+    const bool at_capacity =
+      committed_.size() >= static_cast<size_t>(max_committed_);
     const bool feasible =
-      !energy_known_ ||
-      (energy_j_ - e_cost) > reserve_frac_ * energy_capacity_j_;
+      !at_capacity &&
+      (!energy_known_ ||
+       (energy_j_ - e_cost) > reserve_frac_ * energy_capacity_j_);
  
     M::Bid b;
     b.header.stamp = now();
@@ -458,6 +469,23 @@ private:
     energy_known_ = true;
   }
  
+  // A treated task releases its commitment. Without this committed_ grows
+  // monotonically, every robot reaches max_committed, and the swarm refuses
+  // all further work while still driving its lanes.
+  void onTreatment(const M::Treatment & m)
+  {
+    done_.insert(m.task_id);
+    if (m.robot_id == robot_id_) {
+      committed_.erase(
+        std::remove(committed_.begin(), committed_.end(), m.task_id),
+        committed_.end());
+    }
+    auto it = tasks_.find(m.task_id);
+    if (it != tasks_.end()) {
+      it->second.phase = Phase::Done;
+    }
+  }
+
   bool isSilent(const std::string & id, const rclcpp::Time & t_now) const
   {
     auto it = last_seen_.find(id);
@@ -475,6 +503,7 @@ private:
   int max_rounds_{};
   double energy_per_m_{}, treat_cost_j_{}, reserve_frac_{}, conf_gamma_{};
   double treat_conf_threshold_{};
+  int max_committed_{};
  
   double x_{}, y_{};                 ///< World frame.
   double origin_x_{}, origin_y_{};   ///< Spawn pose, added to wheel odometry.
@@ -505,6 +534,7 @@ private:
   rclcpp::Subscription<M::Bid>::SharedPtr sub_bid_;
   rclcpp::Subscription<M::TaskAward>::SharedPtr sub_award_;
   rclcpp::Subscription<M::RobotState>::SharedPtr sub_state_;
+  rclcpp::Subscription<M::Treatment>::SharedPtr sub_treat_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
