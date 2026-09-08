@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 
 #include "agri_swarm_allocation/utility.hpp"
@@ -187,7 +188,78 @@ static void test_tie_break_is_a_total_order()
   }
 }
 
+// ---------------------------------------------------------------------------
+// Task-id fragmentation.
+//
+// Two sightings of one weed must produce the SAME task_id, or the patch is
+// announced twice, awarded twice and treated twice. Those extra treatments
+// land in redundant_treatments -- a reported metric -- without the auction
+// having done anything wrong. This measures that noise floor.
+// ---------------------------------------------------------------------------
+
+static double fragmentation_rate(double cell, double sigma, int n, unsigned seed)
+{
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> noise(0.0, sigma);
+  std::uniform_real_distribution<double> px(0.0, 30.0);
+  std::uniform_real_distribution<double> py(0.0, 6.75);
+
+  int disagree = 0;
+  for (int i = 0; i < n; ++i) {
+    const double tx = px(rng), ty = py(rng);
+    const uint32_t a = task_id_for(tx + noise(rng), ty + noise(rng), cell);
+    const uint32_t b = task_id_for(tx + noise(rng), ty + noise(rng), cell);
+    if (a != b) {++disagree;}
+  }
+  return static_cast<double>(disagree) / n;
+}
+
+static void test_task_id_is_deterministic()
+{
+  std::printf("task_id determinism\n");
+  CHECK(task_id_for(3.14, 2.71, 0.30) == task_id_for(3.14, 2.71, 0.30));
+  // Both points fall in cell (10, 6): x in [3.0, 3.3), y in [1.8, 2.1).
+  CHECK(task_id_for(3.01, 1.81, 0.30) == task_id_for(3.28, 2.08, 0.30));
+  CHECK(task_id_for(3.14, 2.71, 0.30) != task_id_for(9.99, 8.88, 0.30));
+}
+
+static void test_fragmentation_at_current_settings()
+{
+  std::printf("fragmentation, cell=0.30 sigma=0.03\n");
+  const double rate = fragmentation_rate(0.30, 0.03, 200000, 1u);
+  std::printf("  measured: %.1f%% of paired sightings disagree\n", rate * 100.0);
+  CHECK(rate > 0.15);
+  CHECK(rate < 0.28);
+}
+
+static void test_fragmentation_falls_with_a_larger_cell()
+{
+  std::printf("fragmentation vs cell size\n");
+  const double small = fragmentation_rate(0.30, 0.03, 100000, 2u);
+  const double large = fragmentation_rate(0.60, 0.03, 100000, 2u);
+  std::printf("  cell 0.30: %.1f%%   cell 0.60: %.1f%%\n",
+              small * 100.0, large * 100.0);
+  CHECK(large < small);
+}
+
+static void test_fragmentation_falls_with_a_quieter_detector()
+{
+  std::printf("fragmentation vs position noise\n");
+  const double noisy = fragmentation_rate(0.30, 0.03, 100000, 3u);
+  const double quiet = fragmentation_rate(0.30, 0.01, 100000, 3u);
+  std::printf("  sigma 0.03: %.1f%%   sigma 0.01: %.1f%%\n",
+              noisy * 100.0, quiet * 100.0);
+  CHECK(quiet < noisy);
+}
+
+static void test_zero_noise_never_fragments()
+{
+  std::printf("fragmentation is zero without noise\n");
+  CHECK(fragmentation_rate(0.30, 0.0, 20000, 4u) == 0.0);
+}
+
 int main()
+
 {
   test_parse_bid_mode();
   test_distance_mode_ignores_everything_else();
@@ -195,6 +267,11 @@ int main()
   test_confidence_energy_monotonicity();
   test_soc_contract_without_energy_monitor();
   test_tie_break_is_a_total_order();
+  test_task_id_is_deterministic();
+  test_fragmentation_at_current_settings();
+  test_fragmentation_falls_with_a_larger_cell();
+  test_fragmentation_falls_with_a_quieter_detector();
+  test_zero_noise_never_fragments();
 
   std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
