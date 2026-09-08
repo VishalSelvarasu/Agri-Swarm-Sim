@@ -471,3 +471,121 @@ def test_selection_on_an_empty_queue():
 def test_selection_is_deterministic_on_ties():
     pos = {7: (12.0, -0.375), 3: (12.0, -0.375)}
     assert select_next_task([7, 3], pos, (10.0, -0.375), LANES, +1) == 3
+
+
+# ============================================================================
+# decide(): the executor transition table.
+#
+# Every bug in the node layer so far has been here, and none of them were
+# caught by a test. These cover the four observed failures directly.
+# ============================================================================
+
+from agri_swarm_core.task_execution import Trigger, decide, worth_detouring
+
+BASE = dict(
+    has_task=False, at_station=False, at_resume=False,
+    dwell_elapsed_s=0.0, treat_duration_s=2.0,
+    detour_elapsed_s=0.0, detour_timeout_s=20.0,
+    resume_elapsed_s=0.0, resume_timeout_s=20.0,
+)
+
+
+def d(state, **kw):
+    return decide(state, **{**BASE, **kw})
+
+
+def test_lane_holds_without_work():
+    assert d(ExecState.LANE) == (ExecState.LANE, Trigger.NONE)
+
+
+def test_lane_takes_a_task():
+    assert d(ExecState.LANE, has_task=True) == (ExecState.DETOUR, Trigger.TAKE_TASK)
+
+
+def test_detour_arrives():
+    assert d(ExecState.DETOUR, has_task=True, at_station=True) == (
+        ExecState.TREAT, Trigger.ARRIVED)
+
+
+def test_detour_times_out_to_lane():
+    """Observed live: robots sat in DETOUR for minutes with no plan."""
+    assert d(ExecState.DETOUR, has_task=True, detour_elapsed_s=21.0) == (
+        ExecState.LANE, Trigger.DETOUR_TIMEOUT)
+
+
+def test_arrival_beats_the_timeout():
+    assert d(ExecState.DETOUR, at_station=True, detour_elapsed_s=99.0)[0] is ExecState.TREAT
+
+
+def test_treat_waits_the_dwell():
+    assert d(ExecState.TREAT, dwell_elapsed_s=1.9)[0] is ExecState.TREAT
+    assert d(ExecState.TREAT, dwell_elapsed_s=2.0) == (ExecState.RESUME, Trigger.DWELL_DONE)
+
+
+def test_resume_rejoins_the_lane():
+    assert d(ExecState.RESUME, at_resume=True) == (ExecState.LANE, Trigger.REJOINED)
+
+
+def test_resume_chains_into_the_next_task():
+    assert d(ExecState.RESUME, at_resume=True, has_task=True) == (
+        ExecState.DETOUR, Trigger.TAKE_TASK)
+
+
+def test_resume_times_out():
+    """RESUME was unbounded: a robot that could not reach its resume point
+    drove at it forever and nothing in the log said so."""
+    assert d(ExecState.RESUME, resume_elapsed_s=21.0) == (
+        ExecState.LANE, Trigger.RESUME_TIMEOUT)
+
+
+def test_failed_robot_holds_every_state():
+    for s in ExecState:
+        assert d(s, failed=True, has_task=True, at_station=True,
+                 dwell_elapsed_s=99.0, at_resume=True) == (s, Trigger.NONE)
+
+
+def test_decide_is_total():
+    for s in ExecState:
+        for has in (False, True):
+            for st in (False, True):
+                for rs in (False, True):
+                    decide(s, **{**BASE, "has_task": has, "at_station": st,
+                                 "at_resume": rs})
+
+
+def test_every_trigger_is_reachable():
+    seen = set()
+    for s in ExecState:
+        for kw in ({}, {"has_task": True}, {"at_station": True},
+                   {"at_resume": True}, {"dwell_elapsed_s": 9.0},
+                   {"detour_elapsed_s": 99.0}, {"resume_elapsed_s": 99.0},
+                   {"at_resume": True, "has_task": True}):
+            seen.add(d(s, **kw)[1])
+    assert seen == set(Trigger)
+
+
+# ---------------------------------------------------------------- detour cap
+
+def test_near_work_is_worth_a_detour():
+    assert worth_detouring((10.0, 0.375), (12.0, 0.0), 15.0)
+
+
+def test_distant_work_is_not():
+    """Without this the queue never empties, LANE is exited every tick, and
+    the sweep never progresses -- 470 m travelled, zero sweeps completed."""
+    assert not worth_detouring((10.0, 0.375), (29.0, 0.0), 15.0)
+
+
+def test_selection_skips_work_beyond_the_cap():
+    pos = {1: (28.0, -0.375), 2: (12.0, -0.375)}
+    assert select_next_task([1, 2], pos, (10.0, -0.375), LANES, +1, 15.0) == 2
+
+
+def test_selection_returns_none_when_all_work_is_far():
+    pos = {1: (28.0, -0.375)}
+    assert select_next_task([1], pos, (10.0, -0.375), LANES, +1, 5.0) is None
+
+
+def test_selection_without_a_cap_is_unchanged():
+    pos = {1: (28.0, -0.375)}
+    assert select_next_task([1], pos, (10.0, -0.375), LANES, +1) == 1
