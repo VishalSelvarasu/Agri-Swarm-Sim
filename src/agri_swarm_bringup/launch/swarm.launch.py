@@ -257,11 +257,10 @@ def generate_launch_description():
         DeclareLaunchArgument("world_dir", default_value="/tmp/worlds"),
         DeclareLaunchArgument("bid_mode", default_value="confidence_energy",
                               description="distance | confidence_energy"),
-        DeclareLaunchArgument("treat_confidence_threshold", default_value="0.2",
-                              description="detections below this never become "
+        DeclareLaunchArgument("treat_confidence_threshold", default_value="0.5",                              description="detections below this never become "
                                           "tasks; must match the lowest "
                                           "threshold swept offline"),
-        DeclareLaunchArgument("energy_capacity_j", default_value="40000.0",
+        DeclareLaunchArgument("energy_capacity_j", default_value="2000.0",
                               description="Robot battery capacity in joules. "
                                           "Must match the energy monitor. See "
                                           "HANDOFF risk 5 on sizing."),

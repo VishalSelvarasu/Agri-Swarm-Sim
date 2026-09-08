@@ -38,7 +38,12 @@ class DetectorNode(Node):
         # --- noise model (the experiment axes) ---
         self.declare_parameter("recall_near", 0.95)      # P(detect) at range 0
         self.declare_parameter("recall_far", 0.55)       # P(detect) at max range
-        self.declare_parameter("fp_per_sec", 0.25)       # spurious detections/s
+        # Spurious detections per second, per robot. At 0.25 a four-robot run
+        # generates hundreds of phantom weeds against 79 real ones, so the
+        # swarm spends its time treating noise and the experiment measures the
+        # detector rather than the allocator. 0.02 is roughly one false
+        # positive per robot per minute.
+        self.declare_parameter("fp_per_sec", 0.02)       # spurious detections/s
         self.declare_parameter("position_sigma", 0.03)   # [m]
 
         # Beta shape params. TP mean = a/(a+b).

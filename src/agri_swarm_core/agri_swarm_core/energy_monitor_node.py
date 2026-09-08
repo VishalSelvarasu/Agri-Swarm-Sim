@@ -47,7 +47,7 @@ class EnergyMonitor(Node):
         self.declare_parameter("treat_cost_j", 30.0)
         self.declare_parameter("reserve_fraction", 0.15)
         # Standby draw, so a stationary robot is not free to run forever.
-        self.declare_parameter("idle_w", 2.0)
+        self.declare_parameter("idle_w", 0.2)
         # Stop publishing at t seconds to simulate failure. Negative disables.
         self.declare_parameter("fail_at_s", -1.0)
 
@@ -78,6 +78,7 @@ class EnergyMonitor(Node):
         self.dt = 1.0 / float(g("rate_hz"))
         self.start_s = self._now_s()
         self.last_tick_s = self.start_s
+        self.last_report_s = self.start_s
 
         self.get_logger().info(
             f"{self.robot_id}: capacity {self.capacity:.0f} J, "
@@ -150,6 +151,15 @@ class EnergyMonitor(Node):
 
         if self.pose is None:
             return
+
+        # Logged periodically rather than at shutdown: SIGINT invalidates the
+        # context before a final log line can be published.
+        if now - self.last_report_s >= 30.0:
+            self.last_report_s = now
+            self.get_logger().info(
+                f"travelled {self.distance_m:.1f} m, {self.treatments} treatments, "
+                f"{self.capacity - self.energy_j:.0f} J consumed of "
+                f"{self.capacity:.0f} J")
 
         m = RobotState()
         m.header.stamp = self.get_clock().now().to_msg()
