@@ -15,6 +15,7 @@
 
 #include <agri_swarm_msgs/msg/bid.hpp>
 #include <agri_swarm_msgs/msg/robot_state.hpp>
+#include <agri_swarm_msgs/msg/swarm_event.hpp>
 #include <agri_swarm_msgs/msg/task_announcement.hpp>
 #include <agri_swarm_msgs/msg/task_award.hpp>
 #include <agri_swarm_msgs/msg/treatment.hpp>
@@ -126,6 +127,11 @@ public:
     pub_ann_   = create_publisher<M::TaskAnnouncement>("/task_announcements", qos);
     pub_bid_   = create_publisher<M::Bid>("/bids", qos);
     pub_award_ = create_publisher<M::TaskAward>("/task_awards", qos);
+    // Contention events, one row per *observer*. Every allocator holding the
+    // task sees the same split-brain independently, so the logged stream is
+    // observations, not events; de-duplication on (task_id, round) belongs in
+    // the scorer, where the observer count is itself informative.
+    pub_event_ = create_publisher<M::SwarmEvent>("/swarm_events", qos);
 
     sub_det_ = create_subscription<M::WeedDetection>(
       "/weed_detections", qos, [this](M::WeedDetection::SharedPtr m) { onDetection(*m); });
@@ -143,6 +149,16 @@ public:
       "odom", 10, [this](nav_msgs::msg::Odometry::SharedPtr m) { onOdom(*m); });
 
     timer_ = create_wall_timer(50ms, [this] { resolve(); });
+  }
+
+  ~Allocator() override
+  {
+    RCLCPP_INFO(get_logger(),
+                "%s: %lu split-brain observations, %zu tasks seen, "
+                "%zu still committed at shutdown",
+                robot_id_.c_str(),
+                static_cast<unsigned long>(split_brain_count_),
+                tasks_.size(), committed_.size());
   }
 
 private:
@@ -344,6 +360,34 @@ private:
     submitBid(t);
   }
 
+  // -------------------------------------------------------------------- events
+
+  /// Emits one SwarmEvent. Cheap enough to call unconditionally: the three
+  /// event types together fire at most max_rounds times per task.
+  void publishEvent(uint8_t type, const Task & t,
+                    const std::string & winner_a,
+                    const std::string & winner_b,
+                    uint32_t n_bids_a,
+                    uint32_t n_bids_b,
+                    const std::string & detail)
+  {
+    M::SwarmEvent e;
+    e.header.stamp = now();
+    e.event_type = type;
+    e.observer_id = robot_id_;
+    e.task_id = t.id;
+    e.round = t.round;
+    e.position.x = t.x;
+    e.position.y = t.y;
+    e.confidence = static_cast<float>(t.confidence);
+    e.winner_a = winner_a;
+    e.winner_b = winner_b;
+    e.n_bids_a = n_bids_a;
+    e.n_bids_b = n_bids_b;
+    e.detail = detail;
+    pub_event_->publish(e);
+  }
+
   void decide(Task & t, const rclcpp::Time & t_now)
   {
     if (t.bids.empty()) {
@@ -406,6 +450,13 @@ private:
                   keep.c_str());
       split_brain_count_++;
 
+      publishEvent(M::SwarmEvent::EVENT_SPLIT_BRAIN, t,
+                   t.winner, aw.winner_id,
+                   static_cast<uint32_t>(t.bids.size()),
+                   static_cast<uint32_t>(aw.n_bids_seen),
+                   std::string((aw.winner_id < t.winner) ? "conceded" : "held") +
+                     ";award_round=" + std::to_string(aw.round));
+
       // Lowest robot_id wins. Arbitrary, but identical on every robot.
       if (aw.winner_id < t.winner) {
         t.winner = aw.winner_id;
@@ -428,6 +479,8 @@ private:
                   "task=%u abandoned at (%.2f, %.2f) conf=%.2f after %d rounds, "
                   "last cause: %s",
                   t.id, t.x, t.y, t.confidence, max_rounds_, reason_str(why));
+      publishEvent(M::SwarmEvent::EVENT_ABANDON, t, t.winner, "",
+                   static_cast<uint32_t>(t.bids.size()), 0, reason_str(why));
       done_.insert(t.id);
       t.phase = Phase::Done;
       return;
@@ -435,6 +488,12 @@ private:
 
     RCLCPP_DEBUG(get_logger(), "task=%u re-announce round %u to %u, cause: %s",
                  t.id, t.round, t.round + 1u, reason_str(why));
+
+    // Emitted before the round is incremented, so the recorded round is the one
+    // that failed. Re-announcement rate by cause is a graded contention measure
+    // that, unlike split-brain, is non-zero in a healthy run.
+    publishEvent(M::SwarmEvent::EVENT_REANNOUNCE, t, t.winner, "",
+                 static_cast<uint32_t>(t.bids.size()), 0, reason_str(why));
 
     t.round++;
     t.bids.clear();
@@ -513,7 +572,9 @@ private:
   bool energy_known_{false};
 
   uint8_t status_{M::RobotState::STATUS_IDLE};
-  uint64_t split_brain_count_{0};    ///< TODO: not yet exported for scoring.
+  /// Local observation count, mirrored to /swarm_events and reported at
+  /// shutdown. The CSV is authoritative: this counter is per-robot.
+  uint64_t split_brain_count_{0};
 
   std::map<uint32_t, Task> tasks_;
   std::map<uint32_t, rclcpp::Time> pending_announce_;
@@ -525,6 +586,7 @@ private:
   rclcpp::Publisher<M::TaskAnnouncement>::SharedPtr pub_ann_;
   rclcpp::Publisher<M::Bid>::SharedPtr pub_bid_;
   rclcpp::Publisher<M::TaskAward>::SharedPtr pub_award_;
+  rclcpp::Publisher<M::SwarmEvent>::SharedPtr pub_event_;
   rclcpp::Subscription<M::WeedDetection>::SharedPtr sub_det_;
   rclcpp::Subscription<M::TaskAnnouncement>::SharedPtr sub_ann_;
   rclcpp::Subscription<M::Bid>::SharedPtr sub_bid_;

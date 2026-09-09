@@ -8,6 +8,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from std_msgs.msg import Bool
 
 from agri_swarm_msgs.msg import TaskAnnouncement, TaskAward, Treatment
 
@@ -86,6 +87,10 @@ class TaskExecutor(Node):
         self.declare_parameter("headland_margin_m", 0.0)
         # Fault injection: freeze this robot at t seconds. Negative disables.
         self.declare_parameter("fail_at_s", -1.0)
+        # How often to advertise mission_idle. The run supervisor in
+        # treatment_logger_node ends the mission once every robot has held
+        # idle for its quiet period, so this only needs to be well under it.
+        self.declare_parameter("idle_report_period_s", 0.5)
 
         # ------------------------------------------------------------ config
         self.robot_id = self.get_parameter("robot_id").value
@@ -175,16 +180,102 @@ class TaskExecutor(Node):
         # ---------------------------------------------------------------- io
         self.pub_cmd = self.create_publisher(Twist, "cmd_vel", 10)
         self.pub_treat = self.create_publisher(Treatment, "/treatments", 50)
+        # Namespaced, so this appears as /robot_N/mission_idle.
+        self.pub_idle = self.create_publisher(Bool, "mission_idle", 10)
         self.create_subscription(Odometry, "odom", self.on_odom, 10)
         self.create_subscription(
             TaskAnnouncement, "/task_announcements", self.on_announcement, 50)
         self.create_subscription(TaskAward, "/task_awards", self.on_award, 50)
         self.timer = self.create_timer(0.05, self.tick)
+        self.idle_timer = self.create_timer(
+            self.get_parameter("idle_report_period_s").value,
+            self.publish_idle)
+        self.reported_idle = False
+        # A robot that has swept its lanes but never reports idle is what
+        # hangs a run past the wall clock. These make the reason visible in
+        # the log while it is happening, rather than only in a shutdown
+        # summary that a SIGKILL never lets us print.
+        self.stalled_since = None
+        self.last_blocker_log_s = 0.0
 
     # ------------------------------------------------------------------ clock
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    # -------------------------------------------------------------- liveness
+
+    def mission_idle(self) -> bool:
+        """True when this robot has no more work it could do.
+
+        A failed robot counts as idle. It will never finish its sweep, so
+        without this a fault-injection run could never terminate on its own —
+        which is precisely the run the fault model exists to produce.
+
+        pending_awards is included deliberately: an award whose announcement
+        has not arrived is still work owed. If one is ever permanently
+        stranded it will hold this False, and the supervisor's mission timeout
+        is the backstop that catches it.
+        """
+        if self.failed:
+            return True
+        return (self.done
+                and not self.queue
+                and not self.pending_awards
+                and self.active_task is None
+                and self.state is ExecState.LANE)
+
+    def idle_blockers(self) -> str:
+        """Why this robot is not idle. Printed at shutdown for diagnosis."""
+        if self.mission_idle():
+            return "idle"
+        reasons = []
+        if not self.done:
+            reasons.append(f"sweeping ({self.index}/{len(self.path)})")
+        if self.queue:
+            reasons.append(f"{len(self.queue)} queued")
+        if self.pending_awards:
+            reasons.append(f"{len(self.pending_awards)} awards without an "
+                           f"announcement")
+        if self.active_task is not None:
+            reasons.append(f"servicing {self.active_task}")
+        if self.state is not ExecState.LANE:
+            reasons.append(f"state {self.state.name}")
+        return ", ".join(reasons) if reasons else "unknown"
+
+    def publish_idle(self):
+        idle = self.mission_idle()
+        self.pub_idle.publish(Bool(data=idle))
+        now = self._now_s()
+
+        if idle:
+            self.stalled_since = None
+            if not self.reported_idle:
+                self.reported_idle = True
+                self.get_logger().info(
+                    f"{self.robot_id}: mission idle — sweep complete, "
+                    f"queue empty")
+            return
+
+        if self.reported_idle:
+            self.reported_idle = False
+            self.get_logger().info(
+                f"{self.robot_id}: back to work — {self.idle_blockers()}")
+
+        if not self.done:
+            self.stalled_since = None
+            return
+
+        # Sweep finished but still not idle. Report why every 30s: this is
+        # the state that holds a run open until the batch runner kills it.
+        if self.stalled_since is None:
+            self.stalled_since = now
+            self.last_blocker_log_s = now
+        elif now - self.last_blocker_log_s >= 30.0:
+            self.last_blocker_log_s = now
+            self.get_logger().warn(
+                f"{self.robot_id}: not idle {now - self.stalled_since:.0f}s "
+                f"after sweep completed — {self.idle_blockers()}")
 
     # ------------------------------------------------------------------- pose
 
@@ -467,17 +558,27 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        # rclpy can raise from inside spin() while the context is being torn
+        # down. Exiting non-zero here would make run_batch record a completed
+        # run as a failure.
+        node.get_logger().warn(f"shutdown race in spin(): {e}")
     finally:
         node.get_logger().info(
             f"{node.robot_id}: {len(node.treated)} treated, "
             f"{len(node.queue)} queued, {node.timeouts} timeouts, "
-            f"lane index {node.index}/{len(node.path)}")
-        # After SIGINT the context is already invalid; publishing or shutting
-        # down again raises and the process exits non-zero, which run_batch
-        # would read as a failed run.
-        if rclpy.ok():
+            f"lane index {node.index}/{len(node.path)}, "
+            f"final status: {node.idle_blockers()}")
+        # rclpy.ok() can go stale between the check and the call, so guard the
+        # call itself rather than testing first.
+        try:
             node.pub_cmd.publish(Twist())
-        node.destroy_node()
+        except Exception:
+            pass
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
         rclpy.try_shutdown()
 
 

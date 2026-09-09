@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-
 import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -12,27 +11,6 @@ from agri_swarm_msgs.msg import RobotState, Treatment
 
 
 class EnergyMonitor(Node):
-    """Publishes this robot's RobotState heartbeat on /robot_states.
-
-    Two jobs, and the second is the one that was missing:
-
-    1. Energy. Integrates travelled distance at energy_per_m_j and subtracts
-       treat_cost_j per treatment, so the allocator's state-of-charge term and
-       its reserve gate have something real to read. The two cost constants
-       MUST match the allocator's, or predicted and actual consumption diverge
-       and the feasibility gate fires at the wrong time.
-
-    2. Liveness. allocator_node's isSilent() treats a robot with no entry in
-       last_seen_ as dead. With nothing publishing RobotState, every winner
-       looks dead to its peers, every award is re-announced, and every task
-       burns all max_rounds and is abandoned. The heartbeat is what makes the
-       auction converge at all.
-
-    Fault injection is the absence of this message: after fail_at_s the node
-    stops publishing and its peers observe a silent winner.
-
-    Frame convention: world = origin + odom, as everywhere else.
-    """
 
     def __init__(self):
         super().__init__("energy_monitor")
@@ -41,14 +19,11 @@ class EnergyMonitor(Node):
         self.declare_parameter("origin_x", 0.0)
         self.declare_parameter("origin_y", 0.0)
         self.declare_parameter("rate_hz", 5.0)
-        # Must match allocator_node's parameters of the same names.
         self.declare_parameter("energy_capacity_j", 40000.0)
         self.declare_parameter("energy_per_m_j", 12.0)
         self.declare_parameter("treat_cost_j", 30.0)
         self.declare_parameter("reserve_fraction", 0.15)
-        # Standby draw, so a stationary robot is not free to run forever.
         self.declare_parameter("idle_w", 0.2)
-        # Stop publishing at t seconds to simulate failure. Negative disables.
         self.declare_parameter("fail_at_s", -1.0)
 
         g = lambda n: self.get_parameter(n).value
@@ -65,10 +40,11 @@ class EnergyMonitor(Node):
         self.energy_j = self.capacity
         self.spent_travel_j = 0.0
         self.spent_treat_j = 0.0
+        self.spent_idle_j = 0.0
         self.distance_m = 0.0
         self.treatments = 0
 
-        self.pose = None          # world (x, y)
+        self.pose = None          
         self.orientation = None
         self.last_xy = None
         self.speed = 0.0
@@ -94,6 +70,11 @@ class EnergyMonitor(Node):
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    @property
+    def total_spent_j(self) -> float:
+        """Energy actually consumed. Unbounded: keeps counting past capacity."""
+        return self.spent_travel_j + self.spent_treat_j + self.spent_idle_j
 
     # ------------------------------------------------------------------ input
 
@@ -131,16 +112,12 @@ class EnergyMonitor(Node):
                     f"{self.robot_id} failed at t+{self.fail_at_s:.1f}s "
                     "(injected); heartbeat stops here")
 
-        # No heartbeat is the failure signal. Peers see a silent winner and
-        # re-announce whatever this robot was holding.
+        
         if self.failed:
             return
 
-        idle_j = self.idle_w * max(0.0, elapsed)
-        self.energy_j = max(
-            0.0,
-            self.capacity - self.spent_travel_j - self.spent_treat_j - idle_j)
-        self.spent_travel_j += 0.0   # travel is integrated in the odom callback
+        self.spent_idle_j += self.idle_w * max(0.0, elapsed)
+        self.energy_j = max(0.0, self.capacity - self.total_spent_j)
 
         if self.energy_j <= 0.0 and not self.warned_empty:
             self.warned_empty = True
@@ -152,14 +129,14 @@ class EnergyMonitor(Node):
         if self.pose is None:
             return
 
-        # Logged periodically rather than at shutdown: SIGINT invalidates the
-        # context before a final log line can be published.
+        
         if now - self.last_report_s >= 30.0:
             self.last_report_s = now
             self.get_logger().info(
                 f"travelled {self.distance_m:.1f} m, {self.treatments} treatments, "
-                f"{self.capacity - self.energy_j:.0f} J consumed of "
-                f"{self.capacity:.0f} J")
+                f"{self.total_spent_j:.0f} J spent of {self.capacity:.0f} J "
+                f"(travel {self.spent_travel_j:.0f}, treat "
+                f"{self.spent_treat_j:.0f}, idle {self.spent_idle_j:.0f})")
 
         m = RobotState()
         m.header.stamp = self.get_clock().now().to_msg()
@@ -192,13 +169,17 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        node.get_logger().warn(f"shutdown race in spin(): {e}")
     finally:
         node.get_logger().info(
             f"{node.robot_id}: {node.distance_m:.1f} m travelled, "
-            f"{node.treatments} treatments, "
-            f"{node.capacity - node.energy_j:.0f} J of "
-            f"{node.capacity:.0f} J consumed")
-        node.destroy_node()
+            f"{node.treatments} treatments, {node.total_spent_j:.0f} J spent "
+            f"of {node.capacity:.0f} J")
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
         rclpy.try_shutdown()
 
 

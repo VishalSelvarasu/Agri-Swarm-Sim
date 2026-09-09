@@ -2,7 +2,12 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument, EmitEvent, IncludeLaunchDescription, OpaqueFunction,
+    RegisterEventHandler,
+)
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -236,14 +241,30 @@ def _setup(context, *args, **kwargs):
     actions = [gz, clock_bridge]
 
     # One logger for the whole run, not one per robot: a single writer avoids
-    # interleaved partial rows in treatments.csv.
+    # interleaved partial rows in treatments.csv. It also supervises the run:
+    # when every executor has held mission_idle for quiet_period_s it exits,
+    # and the event handler below turns that into a shutdown of the graph.
+    # Set auto_shutdown:=false to keep a run alive for interactive inspection.
     if cfg["use_allocator"]:
-        actions.append(Node(
+        supervise = flag("auto_shutdown")
+        logger = Node(
             package="agri_swarm_core", executable="treatment_logger_node",
             output="screen",
-            parameters=[{"out_csv": arg("treatments_csv"),
-                         "use_sim_time": True}],
-        ))
+            parameters=[{
+                "out_csv": arg("treatments_csv"),
+                "n_robots": n if supervise else 0,
+                "quiet_period_s": float(arg("quiet_period_s")),
+                "max_mission_s": float(arg("max_mission_s")),
+                "use_sim_time": True,
+            }],
+        )
+        actions.append(logger)
+        if supervise:
+            actions.append(RegisterEventHandler(OnProcessExit(
+                target_action=logger,
+                on_exit=[EmitEvent(event=Shutdown(
+                    reason="mission complete"))],
+            )))
 
     for i in range(n):
         actions += _robot_group(i, n, lanes, cfg)
@@ -257,7 +278,8 @@ def generate_launch_description():
         DeclareLaunchArgument("world_dir", default_value="/tmp/worlds"),
         DeclareLaunchArgument("bid_mode", default_value="confidence_energy",
                               description="distance | confidence_energy"),
-        DeclareLaunchArgument("treat_confidence_threshold", default_value="0.5",                              description="detections below this never become "
+        DeclareLaunchArgument("treat_confidence_threshold", default_value="0.5",
+                              description="detections below this never become "
                                           "tasks; must match the lowest "
                                           "threshold swept offline"),
         DeclareLaunchArgument("energy_capacity_j", default_value="2000.0",
@@ -285,5 +307,15 @@ def generate_launch_description():
                               description="index to freeze, or -1 for none"),
         DeclareLaunchArgument("fail_at_s", default_value="-1.0",
                               description="seconds after start to freeze it"),
+        DeclareLaunchArgument("auto_shutdown", default_value="true",
+                              description="end the run once every robot has "
+                                          "swept its lanes and emptied its "
+                                          "queue; false to keep it alive"),
+        DeclareLaunchArgument("quiet_period_s", default_value="30.0",
+                              description="how long every robot must stay idle "
+                                          "before the mission is declared over"),
+        DeclareLaunchArgument("max_mission_s", default_value="20000.0",
+                              description="backstop for a wedged run, in "
+                                          "simulated seconds; 0 disables"),
         OpaqueFunction(function=_setup),
     ])
