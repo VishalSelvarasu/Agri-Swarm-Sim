@@ -71,24 +71,32 @@ def git_meta(repo: str) -> Dict[str, str]:
             "git_dirty": "1" if dirty and dirty != "unknown" else "0"}
 
 
-def gz_running() -> bool:
-    return subprocess.run(["pgrep", "-f", "gz sim"],
+# launch signals the ruby wrapper, not the server it spawned, and does not
+# reliably reap its own nodes either. Six generations of orphans accumulated in
+# one session: four energy monitors and four executors per robot, plus multiple
+# ros_gz bridges forwarding the same odometry onto the same topic. It presented
+# as bad experimental results, never as an error.
+STRAY = "agri_swarm|gz sim|robot_state_publisher|parameter_bridge|ros_gz"
+
+
+def strays_running() -> bool:
+    return subprocess.run(["pgrep", "-f", STRAY],
                           capture_output=True).returncode == 0
 
 
 def reap_gazebo(grace_s: float = 15.0) -> bool:
-    """Kill every gz server and wait until it is actually gone."""
-    if not gz_running():
+    """Kill every process from a previous run and wait until they are gone."""
+    if not strays_running():
         return True
-    subprocess.run(["pkill", "-f", "gz sim"], check=False)
+    subprocess.run(["pkill", "-f", STRAY], check=False)
     deadline = time.monotonic() + grace_s
     while time.monotonic() < deadline:
-        if not gz_running():
+        if not strays_running():
             return True
         time.sleep(0.5)
-    subprocess.run(["pkill", "-9", "-f", "gz sim"], check=False)
-    time.sleep(2.0)
-    return not gz_running()
+    subprocess.run(["pkill", "-9", "-f", STRAY], check=False)
+    time.sleep(3.0)
+    return not strays_running()
 
 
 def free_gb(path: str) -> float:
