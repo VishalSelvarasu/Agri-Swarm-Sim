@@ -441,6 +441,16 @@ class TaskExecutor(Node):
              for t in self.queue if t in self.known},
             here, self.lane_ys, direction, self.max_detour)
         if task_id is None:
+            # Nothing within max_detour_m. While sweeping that is fine — the
+            # lane advances and tasks come into range. After the sweep the
+            # index is frozen, so anything out of range is out of range
+            # forever and the queue never drains: the robot reports itself
+            # busy until the batch runner kills the run. Drop them.
+            if self.done and self.queue:
+                self.get_logger().warn(
+                    f"sweep complete with {len(self.queue)} tasks beyond "
+                    f"max_detour_m {self.max_detour:.0f}; dropping them")
+                self.queue.clear()
             return False
 
         tx, ty, _conf = self.known[task_id]
