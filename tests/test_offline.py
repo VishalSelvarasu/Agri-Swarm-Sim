@@ -295,7 +295,7 @@ def test_scorer_cli_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The determinism claim in HANDOFF.md, made executable.
+# The determinism claim in the README, made executable.
 # ---------------------------------------------------------------------------
 
 GEN = os.path.join(REPO, "src", "agri_swarm_core", "agri_swarm_core", "generate_field.py")

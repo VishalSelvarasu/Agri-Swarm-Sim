@@ -282,10 +282,12 @@ def generate_launch_description():
                               description="detections below this never become "
                                           "tasks; must match the lowest "
                                           "threshold swept offline"),
-        DeclareLaunchArgument("energy_capacity_j", default_value="2000.0",
+        DeclareLaunchArgument("energy_capacity_j", default_value="16000.0",
                               description="Robot battery capacity in joules. "
-                                          "Must match the energy monitor. See "
-                                          "HANDOFF risk 5 on sizing."),
+                                          "Must match the energy monitor. A "
+                                          "full mission costs 11-19 kJ for the "
+                                          "busiest robot; 16000 makes the "
+                                          "reserve gate bite near the end."),
         DeclareLaunchArgument("headless", default_value="true",
                               description="true for batch runs; false to watch"),
         DeclareLaunchArgument("use_allocator", default_value="true",
