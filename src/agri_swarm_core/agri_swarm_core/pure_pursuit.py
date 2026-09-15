@@ -10,9 +10,6 @@ from typing import List, Sequence, Tuple
 Point = Tuple[float, float]
 
 
-# ---------------------------------------------------------------------------
-# Geometry / lane bookkeeping
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Lane:
@@ -110,10 +107,6 @@ def lane_waypoints(
 
     return path
 
-
-# ---------------------------------------------------------------------------
-# Control
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Pose2D:

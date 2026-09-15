@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from agri_swarm_msgs.msg import SwarmEvent, TaskAward, Treatment
+from agri_swarm_msgs.msg import (
+    RobotState, SwarmEvent, TaskAward, Treatment)
 
 # Fixed by analysis/score_run.py. One row per treatment, no aggregation:
 # aggregating here is what would force the threshold sweep back into simulation.
@@ -38,6 +40,11 @@ EVENT_FIELDNAMES = [
     "n_bids_b",
     "detail",
 ]
+
+# One row per robot per pose_period_s, lifted from the RobotState heartbeat
+# the energy monitor already publishes. Used by analysis/replay.py to draw
+# real tracks instead of interpolating between treatment positions.
+POSE_FIELDNAMES = ["t_s", "robot_id", "x", "y", "yaw"]
 
 EVENT_NAMES = {
     SwarmEvent.EVENT_REANNOUNCE: "reannounce",
@@ -76,6 +83,9 @@ class TreatmentLogger(Node):
         # Empty means "events.csv beside treatments.csv", so no launch file
         # needs to know about this file.
         self.declare_parameter("events_csv", "")
+        # Seconds between logged poses per robot. The heartbeat is 5 Hz;
+        # 0.5 s is plenty for a replay and keeps the file small.
+        self.declare_parameter("pose_period_s", 0.5)
         # Zero disables termination entirely and the node runs until Ctrl-C.
         self.declare_parameter("n_robots", 0)
         # Must exceed the longest gap a robot can sit idle mid-mission. A robot
@@ -113,7 +123,18 @@ class TreatmentLogger(Node):
         self.event_counts = {name: 0 for name in EVENT_NAMES.values()}
         self.event_counts["award"] = 0
 
+        poses_path = os.path.join(directory or ".", "poses.csv")
+        self.poses_file = open(poses_path, "w", newline="")
+        self.poses_writer = csv.DictWriter(
+            self.poses_file, fieldnames=POSE_FIELDNAMES)
+        self.poses_writer.writeheader()
+        self.poses_file.flush()
+        self.pose_rows = 0
+        self.pose_period_s = float(self.get_parameter("pose_period_s").value)
+        self.last_pose_s = {}
+
         self.create_subscription(Treatment, "/treatments", self.on_treatment, 50)
+        self.create_subscription(RobotState, "/robot_states", self.on_state, 50)
         self.create_subscription(SwarmEvent, "/swarm_events", self.on_event, 50)
         # The award stream is the denominator. Only the winning allocator
         # publishes an award, so one row here is one awarded (task, round).
@@ -121,6 +142,7 @@ class TreatmentLogger(Node):
 
         self.get_logger().info(f"writing treatments to {path}")
         self.get_logger().info(f"writing events to {events_path}")
+        self.get_logger().info(f"writing poses to {poses_path}")
 
         # ------------------------------------------------------- supervision
         self.finished = False
@@ -204,6 +226,25 @@ class TreatmentLogger(Node):
         self.file.flush()
         self.rows += 1
 
+    def on_state(self, m: RobotState):
+        t = _stamp_s(m.header)
+        last = self.last_pose_s.get(m.robot_id)
+        if last is not None and t - last < self.pose_period_s:
+            return
+        self.last_pose_s[m.robot_id] = t
+        q = m.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.poses_writer.writerow({
+            "t_s": f"{t:.3f}",
+            "robot_id": m.robot_id,
+            "x": f"{m.pose.position.x:.4f}",
+            "y": f"{m.pose.position.y:.4f}",
+            "yaw": f"{yaw:.4f}",
+        })
+        self.poses_file.flush()
+        self.pose_rows += 1
+
     def _write_event(self, row: dict):
         self.events_writer.writerow(row)
         self.events_file.flush()
@@ -249,6 +290,7 @@ class TreatmentLogger(Node):
 
     def destroy_node(self):
         self.get_logger().info(f"wrote {self.rows} treatments")
+        self.get_logger().info(f"wrote {self.pose_rows} poses")
         summary = ", ".join(
             f"{k}={v}" for k, v in sorted(self.event_counts.items()))
         self.get_logger().info(f"wrote {self.event_rows} events ({summary})")
@@ -259,7 +301,10 @@ class TreatmentLogger(Node):
             try:
                 self.events_file.close()
             finally:
-                super().destroy_node()
+                try:
+                    self.poses_file.close()
+                finally:
+                    super().destroy_node()
 
 
 def main(args=None):
