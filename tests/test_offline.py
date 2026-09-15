@@ -358,7 +358,7 @@ def test_ablation_does_not_leak_outside_utility_hpp():
     allowed = {"utility.hpp", "test_utility.cpp"}
     branch_markers = (
         'bid_mode_ ==', 'bid_mode ==',
-        '== "confidence_energy"', '== "distance"',
+        '== "energy_aware"', '== "confidence_energy"', '== "distance"',
         'case BidMode::', 'case agri_swarm::BidMode::',
         'switch (bid_mode', 'switch(bid_mode',
     )

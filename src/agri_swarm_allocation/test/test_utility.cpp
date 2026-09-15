@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -32,18 +33,19 @@ static BidInputs base()
   return in;
 }
 
-// ---------------------------------------------------------------------------
-// Mode parsing happens once, at construction, and rejects garbage loudly.
-// ---------------------------------------------------------------------------
+
 static void test_parse_bid_mode()
 {
   std::printf("parse_bid_mode\n");
   CHECK(parse_bid_mode("distance") == BidMode::Distance);
-  CHECK(parse_bid_mode("confidence_energy") == BidMode::ConfidenceEnergy);
+  CHECK(parse_bid_mode("energy_aware") == BidMode::EnergyAware);
+  // The pre-rename name still parses, so run directories and results.csv rows
+  // written before the rename stay readable against current code.
+  CHECK(parse_bid_mode("confidence_energy") == BidMode::EnergyAware);
 
   bool threw = false;
   try {
-    parse_bid_mode("confidence-energy");
+    parse_bid_mode("energy-aware");
   } catch (const std::invalid_argument &) {
     threw = true;
   }
@@ -58,11 +60,7 @@ static void test_parse_bid_mode()
   CHECK(threw);
 }
 
-// ---------------------------------------------------------------------------
-// THE ablation invariant. Distance mode must be a pure function of distance.
-// If someone quietly folds confidence into the baseline to make the headline
-// number nicer, this test is what catches it.
-// ---------------------------------------------------------------------------
+
 static void test_distance_mode_ignores_everything_else()
 {
   std::printf("distance mode is a function of distance ALONE\n");
@@ -84,7 +82,6 @@ static void test_distance_mode_ignores_everything_else()
   CHECK(utility(BidMode::Distance, a, 1.0) == utility(BidMode::Distance, a, 3.7));
 }
 
-// ---------------------------------------------------------------------------
 static void test_infeasible_dominates_in_both_modes()
 {
   std::printf("infeasible sorts below every feasible bid\n");
@@ -92,7 +89,7 @@ static void test_infeasible_dominates_in_both_modes()
   bad.feasible = false;
 
   CHECK(utility(BidMode::Distance, bad) == kInfeasibleUtility);
-  CHECK(utility(BidMode::ConfidenceEnergy, bad) == kInfeasibleUtility);
+  CHECK(utility(BidMode::EnergyAware, bad) == kInfeasibleUtility);
 
   // Worst realistic feasible distance bid still beats infeasible.
   BidInputs worst = base();
@@ -100,34 +97,65 @@ static void test_infeasible_dominates_in_both_modes()
   CHECK(utility(BidMode::Distance, worst) > kInfeasibleUtility);
 }
 
-// ---------------------------------------------------------------------------
-static void test_confidence_energy_monotonicity()
+static void test_energy_aware_monotonicity()
 {
-  std::printf("confidence_energy monotonicity\n");
+  std::printf("energy_aware monotonicity\n");
 
   BidInputs lo = base(); lo.confidence = 0.3;
   BidInputs hi = base(); hi.confidence = 0.9;
-  CHECK(utility(BidMode::ConfidenceEnergy, hi) > utility(BidMode::ConfidenceEnergy, lo));
+  CHECK(utility(BidMode::EnergyAware, hi) > utility(BidMode::EnergyAware, lo));
 
   BidInputs cheap = base(); cheap.energy_cost_j = 10.0;
   BidInputs dear = base(); dear.energy_cost_j = 500.0;
-  CHECK(utility(BidMode::ConfidenceEnergy, cheap) > utility(BidMode::ConfidenceEnergy, dear));
+  CHECK(utility(BidMode::EnergyAware, cheap) > utility(BidMode::EnergyAware, dear));
 
   BidInputs full = base(); full.energy_j = 39000.0;
   BidInputs flat = base(); flat.energy_j = 4000.0;
-  CHECK(utility(BidMode::ConfidenceEnergy, full) > utility(BidMode::ConfidenceEnergy, flat));
+  CHECK(utility(BidMode::EnergyAware, full) > utility(BidMode::EnergyAware, flat));
 
   // Zero confidence is floored, not divided-by-zero or negative.
   BidInputs zero = base(); zero.confidence = 0.0;
-  CHECK(utility(BidMode::ConfidenceEnergy, zero) > 0.0);
+  CHECK(utility(BidMode::EnergyAware, zero) > 0.0);
 }
 
-// ---------------------------------------------------------------------------
-// The degenerate state the repo is in RIGHT NOW: no energy monitor exists, so
-// energy_known is false everywhere. This test pins the contract so the
-// degeneracy is a documented fact rather than an accident of std::max.
-// ---------------------------------------------------------------------------
-static void test_soc_contract_without_energy_monitor()
+
+static void test_energy_aware_ranking_ignores_task_confidence()
+{
+  std::printf("energy_aware ranking does not depend on task confidence\n");
+
+  BidInputs a = base();          // cheaper, fuller robot
+  a.energy_cost_j = 50.0;
+  a.energy_j = 36000.0;
+
+  BidInputs b = base();          // dearer, emptier robot
+  b.energy_cost_j = 120.0;
+  b.energy_j = 9000.0;
+
+
+  for (const double c : {0.05, 0.25, 0.50, 0.75, 0.99}) {
+    a.confidence = c;
+    b.confidence = c;
+    CHECK(utility(BidMode::EnergyAware, a) > utility(BidMode::EnergyAware, b));
+  }
+
+
+  a.confidence = b.confidence = 0.10;
+  const double r_low = utility(BidMode::EnergyAware, a) /
+    utility(BidMode::EnergyAware, b);
+  a.confidence = b.confidence = 0.90;
+  const double r_high = utility(BidMode::EnergyAware, a) /
+    utility(BidMode::EnergyAware, b);
+  CHECK(std::fabs(r_low - r_high) < 1e-12);
+
+
+  a.confidence = b.confidence = 0.40;
+  CHECK(
+    (utility(BidMode::EnergyAware, a, 3.0) > utility(BidMode::EnergyAware, b, 3.0))
+    == (utility(BidMode::EnergyAware, a, 1.0) > utility(BidMode::EnergyAware, b, 1.0)));
+}
+
+
+static void test_soc_contract()
 {
   std::printf("state_of_charge contract\n");
 
@@ -136,7 +164,7 @@ static void test_soc_contract_without_energy_monitor()
   CHECK(state_of_charge(unknown) == 1.0);
 
   BidInputs bad_capacity = base();
-  bad_capacity.energy_capacity_j = -1.0;  // the old default
+  bad_capacity.energy_capacity_j = -1.0;
   CHECK(state_of_charge(bad_capacity) == 1.0);
 
   BidInputs over = base();
@@ -153,11 +181,7 @@ static void test_soc_contract_without_energy_monitor()
   CHECK(state_of_charge(half) == 0.5);
 }
 
-// ---------------------------------------------------------------------------
-// Winner selection must be a strict total order, or two robots that received
-// the same bid set can still disagree -- which would make the reported
-// split-brain rate a measure of your comparator, not of message loss.
-// ---------------------------------------------------------------------------
+
 static void test_tie_break_is_a_total_order()
 {
   std::printf("bid_beats is deterministic and antisymmetric\n");
@@ -168,7 +192,6 @@ static void test_tie_break_is_a_total_order()
   CHECK(!bid_beats(1.0, 9, 1.0, 3));
   CHECK(!bid_beats(1.0, 4, 1.0, 4));         // irreflexive
 
-  // Exhaustive antisymmetry + determinism over a small grid.
   const double utils[] = {-1.0e9, -5.0, 0.0, 0.25, 3.0};
   for (uint32_t ia = 0; ia < 4; ++ia) {
     for (uint32_t ib = 0; ib < 4; ++ib) {
@@ -188,14 +211,7 @@ static void test_tie_break_is_a_total_order()
   }
 }
 
-// ---------------------------------------------------------------------------
 // Task-id fragmentation.
-//
-// Two sightings of one weed must produce the SAME task_id, or the patch is
-// announced twice, awarded twice and treated twice. Those extra treatments
-// land in redundant_treatments -- a reported metric -- without the auction
-// having done anything wrong. This measures that noise floor.
-// ---------------------------------------------------------------------------
 
 static double fragmentation_rate(double cell, double sigma, int n, unsigned seed)
 {
@@ -259,13 +275,13 @@ static void test_zero_noise_never_fragments()
 }
 
 int main()
-
 {
   test_parse_bid_mode();
   test_distance_mode_ignores_everything_else();
   test_infeasible_dominates_in_both_modes();
-  test_confidence_energy_monotonicity();
-  test_soc_contract_without_energy_monitor();
+  test_energy_aware_monotonicity();
+  test_energy_aware_ranking_ignores_task_confidence();
+  test_soc_contract();
   test_tie_break_is_a_total_order();
   test_task_id_is_deterministic();
   test_fragmentation_at_current_settings();

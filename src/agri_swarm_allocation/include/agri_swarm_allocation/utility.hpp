@@ -11,21 +11,34 @@ namespace agri_swarm
 enum class BidMode
 {
   Distance,          // classic nearest-robot; distance-OPTIMAL by construction
-  ConfidenceEnergy,  // deliberately deviates from distance-optimal
+  // Ranks bidders by state of charge over estimated energy cost.
+  //
+  // Named ConfidenceEnergy until the ablation was analysed. Task
+  // confidence multiplies the whole expression, and within one auction
+  // every bidder sees the same task, so the factor is identical across
+  // bids and cancels from the argmax. It is retained because it scales
+  // utilities comparably across tasks, but it cannot change which robot
+  // wins one. Confidence gates whether a task exists at all, via
+  // treat_confidence_threshold; it does not decide who services it.
+  // See test_energy_aware_is_rank_invariant_in_confidence.
+  EnergyAware,
 };
 
 /// Parse at construction time, never inside a callback.
 inline BidMode parse_bid_mode(const std::string & s)
 {
   if (s == "distance") {return BidMode::Distance;}
-  if (s == "confidence_energy") {return BidMode::ConfidenceEnergy;}
+  if (s == "energy_aware") {return BidMode::EnergyAware;}
+  // Accepted so that run directories and results.csv rows written before
+  // the rename still parse against current code.
+  if (s == "confidence_energy") {return BidMode::EnergyAware;}
   throw std::invalid_argument(
-          "unknown bid_mode: '" + s + "' (expected 'distance' or 'confidence_energy')");
+          "unknown bid_mode: '" + s + "' (expected 'distance' or 'energy_aware')");
 }
 
 inline const char * to_string(BidMode m)
 {
-  return m == BidMode::Distance ? "distance" : "confidence_energy";
+  return m == BidMode::Distance ? "distance" : "energy_aware";
 }
 
 
@@ -59,7 +72,7 @@ inline double utility(BidMode mode, const BidInputs & in, double conf_gamma = 1.
 
       return -in.distance_m;
 
-    case BidMode::ConfidenceEnergy: {
+    case BidMode::EnergyAware: {
         const double c = std::pow(std::max(1e-3, in.confidence), conf_gamma);
         const double soc = state_of_charge(in);
         return (c * soc) / (in.energy_cost_j + 1.0);

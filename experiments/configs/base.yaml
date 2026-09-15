@@ -31,7 +31,7 @@ detector:
   conf_fp_beta: 3.0
 
 auction:
-  bid_mode: confidence_energy # ablation: distance | confidence_energy
+  bid_mode: energy_aware      # ablation: distance | energy_aware
   task_cell_size: 0.30        # must exceed detector.position_sigma comfortably
   bid_window_s: 0.6
   award_grace_s: 1.2

@@ -75,7 +75,7 @@ public:
     // Parsed once at construction so that an invalid value cannot propagate out
     // of a subscription callback.
     bid_mode_ = agri_swarm::parse_bid_mode(
-      declare_parameter<std::string>("bid_mode", "confidence_energy"));
+      declare_parameter<std::string>("bid_mode", "energy_aware"));
 
     // Grid cell for task identity. Measured fragmentation at 0.30 m against a
     // detector position_sigma of 0.03 m is roughly 21%: one weed in five
@@ -290,7 +290,7 @@ private:
   }
 
   /// Marshals node state into the ROS-free utility function in utility.hpp,
-  /// which holds the distance / confidence_energy ablation.
+  /// which holds the distance / energy_aware ablation.
   double utility(const Task & t, double dist, double e_cost, bool feasible) const
   {
     agri_swarm::BidInputs in;
@@ -553,7 +553,7 @@ private:
   // -------------------------------------------------------------------- state
 
   std::string robot_id_;
-  agri_swarm::BidMode bid_mode_{agri_swarm::BidMode::ConfidenceEnergy};
+  agri_swarm::BidMode bid_mode_{agri_swarm::BidMode::EnergyAware};
   double cell_{}, bid_window_{}, award_grace_{};
   int max_rounds_{};
   double energy_per_m_{}, treat_cost_j_{}, reserve_frac_{}, conf_gamma_{};

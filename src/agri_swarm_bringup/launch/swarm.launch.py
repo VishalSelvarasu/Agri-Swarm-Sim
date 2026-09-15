@@ -276,8 +276,10 @@ def generate_launch_description():
         DeclareLaunchArgument("n_robots", default_value="4"),
         DeclareLaunchArgument("seed", default_value="0"),
         DeclareLaunchArgument("world_dir", default_value="/tmp/worlds"),
-        DeclareLaunchArgument("bid_mode", default_value="confidence_energy",
-                              description="distance | confidence_energy"),
+        DeclareLaunchArgument("bid_mode", default_value="energy_aware",
+                              description="distance | energy_aware; "
+                                          "confidence_energy is accepted "
+                                          "as an alias for the latter"),
         DeclareLaunchArgument("treat_confidence_threshold", default_value="0.5",
                               description="detections below this never become "
                                           "tasks; must match the lowest "

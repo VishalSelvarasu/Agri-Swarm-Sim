@@ -269,7 +269,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--n-robots", type=int, nargs="+", dest="n_robots",
                    default=None)
     p.add_argument("--bid-modes", nargs="+", dest="bid_modes", default=None,
-                   choices=["distance", "confidence_energy"])
+                   choices=["distance", "energy_aware", "confidence_energy"])
     p.add_argument("--treat-threshold", type=float, default=None,
                    dest="treat_threshold")
     p.add_argument("--repeats", type=int, default=2)
