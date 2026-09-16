@@ -15,7 +15,7 @@ ROS 2 Jazzy, Gazebo Harmonic, Ubuntu 24.04. Simulation only.
 
 ![Four robots in the staged Gazebo world](docs/gazebo.png)
 
-*Green: crop rows. Yellow: weeds. Blue: robots. A robot cannot enter a row, so
+*Four robots sweep the field; three are in frame here. Green: crop rows. Yellow: weeds. Blue: robots. A robot cannot enter a row, so
 it stops in the adjacent lane and sprays sideways.*
 
 ![Replay of a distance-bid mission](docs/sweep_distance.gif)

@@ -273,7 +273,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--treat-threshold", type=float, default=None,
                    dest="treat_threshold")
     p.add_argument("--repeats", type=int, default=2)
-    p.add_argument("--energy-capacity", type=float, default=13000.0,
+    p.add_argument("--energy-capacity", type=float, default=16000.0,
                    dest="energy_capacity")
     p.add_argument("--max-mission-s", type=float, default=20000.0,
                    dest="max_mission_s")
@@ -338,7 +338,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     todo = [s for s in plan if s["run_id"] not in done]
 
     print(f"{len(plan)} runs planned, {len(done)} already ok, {len(todo)} to "
-          f"run (~{len(todo) * 700 / 3600.0:.1f} h at 11 min each)")
+          f"run (~{len(todo) * 420 / 3600.0:.1f} h at ~7 min each)")
     if meta["git_dirty"] == "1":
         print("WARNING: working tree is dirty; these results will not be "
               "reproducible from the recorded SHA.", file=sys.stderr)

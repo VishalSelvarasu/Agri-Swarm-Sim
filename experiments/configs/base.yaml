@@ -1,61 +1,78 @@
 experiment:
   name: base
-  n_seeds: 20                 # report median + IQR, never a single run
-  seeds: range(0, 20)
-  timeout_s: 900              # hard cap; a run that hits it is logged as such
-
-field:
-  n_rows: 10
-  row_length: 30.0
-  row_spacing: 0.75
-  weed_density: 0.35          # weeds / m^2
-  intra_row_fraction: 0.7
-
+  n_seeds: 20                
+  timeout_s: 2400
+ 
 swarm:
-  n_robots: 4                 # scalability sweep overrides: 4, 8, 12
-  energy_capacity_j: 40000.0
-  energy_per_m_j: 12.0
-  treat_cost_j: 30.0
-  reserve_fraction: 0.15
-
-detector:
-  recall_near: 0.95
-  recall_far: 0.55
-  fp_per_sec: 0.25
-  position_sigma: 0.03
-  # The TP/FP confidence distributions OVERLAP on purpose. Separable
-  # distributions make confidence-weighted bidding win trivially.
-  conf_tp_alpha: 6.0
-  conf_tp_beta: 2.0
-  conf_fp_alpha: 2.0
-  conf_fp_beta: 3.0
-
+  n_robots: 4                 
+ 
 auction:
-  bid_mode: energy_aware      # ablation: distance | energy_aware
-  task_cell_size: 0.30        # must exceed detector.position_sigma comfortably
-  bid_window_s: 0.6
-  award_grace_s: 1.2
-  max_rounds: 4
-  confidence_gamma: 1.5
-
-# ---------------------------------------------------------------------------
-# Metrics. Note what is NOT here: "% herbicide reduction vs blanket spraying".
-# That number is arithmetic -- with weed coverage around 8% of field area, any
-# working system reports ~90% reduction, including a hardcoded waypoint list.
-# The defensible result is the trade-off CURVE below, swept over
-# treat_confidence_threshold.
-# ---------------------------------------------------------------------------
-metrics:
-  primary:
-    - weeds_treated_frac         # recall of the whole pipeline
-    - false_positive_treatments  # herbicide wasted on bare soil
-    - mission_time_s
-    - total_energy_j
-  secondary:
-    - time_to_95_coverage_s
-    - split_brain_events         # allocator disagreements; expect > 0
-    - tasks_abandoned            # hit max_rounds
-    - reallocation_count
-
+  bid_mode: energy_aware      
+ 
 sweeps:
-  treat_confidence_threshold: [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  treat_confidence_threshold: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
+ 
+
+node_defaults:
+ 
+  field:                      # agri_swarm_core/generate_field.py
+    n_rows: 10
+    row_length: 30.0
+    row_spacing: 0.75
+    intra_row_fraction: 0.7   # seed 0 gives 54 of 79 weeds on a crop row
+ 
+  detector:                   # agri_swarm_core/detector_node.py
+    fp_per_sec: 0.02
+    position_sigma: 0.03
+  
+    conf_tp_beta: 2.0
+    conf_fp_alpha: 2.0
+    conf_fp_beta: 3.0
+ 
+  energy:                     
+    energy_capacity_j: 16000.0
+    energy_per_m_j: 12.0
+    treat_cost_j: 30.0
+    reserve_fraction: 0.15
+    idle_w: 0.2
+ 
+  allocation:                 # allocator_node.cpp
+    task_cell_size: 0.30      
+    bid_window_s: 0.6
+    award_grace_s: 1.2
+    max_rounds: 4
+    confidence_gamma: 1.5     
+                             
+    max_committed: 30
+ 
+  execution:                  # task_executor_node.py
+    max_detour_m: 12.0
+    detour_timeout_s: 30.0
+    resume_timeout_s: 30.0
+    station_tol_m: 0.30
+    spray_reach_m: 0.45
+    headland_margin_m: 1.5
+ 
+  mission:                    # swarm.launch.py
+    quiet_period_s: 30.0
+    max_mission_s: 20000.0
+ 
+
+metrics:
+  # results/*.csv, one row per run, written by run_batch.py
+  per_run:
+    - total_energy_j
+    - max_energy_j
+    - energy_spread_j
+    - mission_time_s
+    - weeds_treated_frac
+    - intra_row_treated_frac
+    - precision
+    - redundant_treatments        # noise-dominated; see README limitations
+    - duplicate_task_treatments
+ 
+  
+  contention:
+    - split_brain_awards
+    - reannounce_events
+    - abandon_events
