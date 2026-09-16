@@ -64,8 +64,8 @@ runs only.
 
 | condition | seeds × reps | `total_energy_j` Δ | 95% CI | recall Δ | 95% CI |
 |---|---|---|---|---|---|
-| A — 22 kJ pack, reserve gate never fires | 20 × 2 | −799 J | [−2445, +847] | −0.0022 | [−0.023, +0.019] |
-| B — 16 kJ pack, gate fires near end of mission | 10 × 2 | +1273 J | [−740, +3286] | +0.0044 | [−0.023, +0.032] |
+| A — 22 kJ pack, reserve gate never fires | 20 × 2 | −799 J | [−2444, +847] | −0.0022 | [−0.023, +0.019] |
+| B — 16 kJ pack, gate fires near end of mission | 10 × 2 | +1273 J | [−739, +3285] | +0.0044 | [−0.023, +0.032] |
 
 Δ is `energy_aware` minus `distance`, on a mean total of ~50 kJ. Both intervals
 straddle zero, the signs disagree between conditions, and seed-level win counts
@@ -75,7 +75,7 @@ What this does **not** say is that the policies are equivalent. Condition A is
 compatible with anything from a 5% energy saving to a 2% increase. It says the
 experiment cannot distinguish them at this sample size: the sd of the paired
 per-seed difference is 3755 J, so detecting an effect the size of the one
-observed at 80% power would take roughly 170 paired seeds rather than 20. If
+observed at 80% power would take roughly 174 paired seeds rather than 20. If
 equivalence is the question, it needs a pre-declared margin — say |ΔE| < 5% —
 and a test that the interval falls inside it.
 
@@ -84,6 +84,24 @@ finished all four lane sweeps.
 
 This is reported as a null because it is one. An effect found by tuning until
 one appears is worth less than an honest negative with its interval attached.
+
+### Reproducing the table
+
+Both result sets are in the repository, and every figure above comes out of
+them:
+
+```bash
+python3 analysis/compare_modes.py results/slack_22kj.csv
+python3 analysis/compare_modes.py results/binding_16kj.csv
+python3 analysis/compare_modes.py results/slack_22kj.csv --per-seed
+```
+
+`results/*.csv` are `run_batch.py` output: one row per run, appended, with
+retried cells appearing more than once. `compare_modes.py` filters on
+`status == ok`, averages repeats within each (seed, mode) cell, then pairs by
+seed — unpaired means would be swamped by which seeds happened to land where.
+The `bid_mode` column reads `confidence_energy` in these files because they
+predate the rename; the script normalises it.
 
 ### Three things that came out of getting there
 
@@ -119,14 +137,14 @@ on the geometric argument alone.
 | **ROS 2 Jazzy + Gazebo Harmonic (Ubuntu 24.04)** | Gazebo Classic reached EOL in January 2025, and Jazzy does not run on 22.04. |
 | **No cameras. Detection is a seeded noise model.** | Rendering dominates gz-sim cost and is what would make a larger swarm infeasible. A colour threshold applied to markers you placed yourself is a lookup table with extra steps. `gz-sim-sensors-system` is not loaded at all. |
 | **Custom 90-line diff-drive robot, not TurtleBot3** | TB3's value was its sensor suite. With the camera gone that value is gone, and TB3 on Jazzy/Harmonic was the stack's largest dependency risk. |
-| **Interfaces before nodes** | The auction protocol was one vague line in the charter. Writing the messages first forced bid deadlines, rounds, and tie-breaking to be decided up front instead of surfacing later as race conditions. |
+| **Interfaces before nodes** | The auction protocol started as one vague line of intent. Writing the messages first forced bid deadlines, rounds, and tie-breaking to be decided up front instead of surfacing later as race conditions. |
 | **World is generated, not authored** | `generate_field.py --seed N` is a pure function: same seed, byte-identical SDF and ground truth. This is what makes a 20-seed harness possible rather than a retrofit. |
 | **Allocator in C++, ablation in one header** | The whole comparison lives in `utility.hpp` with 840 assertions behind it, and a test forbids any other file from branching on the mode. That constraint is what made the rank-invariance visible: with the utility in one place, it is four lines to read and check. |
 | **Interrupt execution, not two-pass** | Two-pass makes allocation a static assignment solved with complete information. Under that, both bid modes converge and the ablation shows nothing by construction. |
 | **Robots never drive to a weed** | 54 of 79 weeds sit on a crop row. The outer wheel track (0.34 m) cannot enter a 0.22 m row from a lane 0.375 m away. Treating means driving along the lane to the weed's x and spraying sideways. |
 | **Run status comes from the log, not the exit code** | Nodes lose races against context teardown and exit 1 on runs that completed perfectly; a run truncated by the mission timeout exits 0. `mission complete` in the log is the only reliable signal. |
 
-## Two things the original charter got wrong
+## Two things the original plan got wrong
 
 **"≥40% reduction in simulated herbicide vs. blanket spraying" is arithmetic,
 not a result.** If weed patches cover fraction *p* of the field, targeted
@@ -154,10 +172,13 @@ src/agri_swarm_allocation/    C++ decentralized auction — the core contributio
 src/agri_swarm_description/   diff-drive robot, no camera
 src/agri_swarm_bringup/       namespaced N-robot launch, with mission shutdown
 analysis/score_run.py         offline scorer, threshold sweep, contention
+analysis/compare_modes.py     the paired ablation table, from committed results
 analysis/replay.py            top-down animation of a run, from its own logs
 scripts/stage_field.py        dressed world for screenshots and video
 experiments/run_batch.py      (seed × bid_mode × repeat) runner, resumable
-experiments/configs/          every tunable number, and nothing else
+experiments/configs/          experiment defaults
+results/                      the 120 runs behind the table above
+docs/                         the figures in this file
 ```
 
 ## Run it
@@ -304,6 +325,12 @@ threshold study worth reporting would simulate each threshold directly.
   refuses new work below the reserve fraction, but nothing forces a robot to
   stop or return at zero, and committed future tasks are not reserved against.
   "Binding constraint" above means the gate fires, not that the robot dies.
+- **Repeats share a detector seed.** The detector RNG is keyed on field seed
+  and robot id, not on the replication index, so the two repeats within a cell
+  see correlated noise. They still differ — scheduling jitter propagates
+  through detour ordering, which is most of the observed variance — but they
+  are not clean Monte Carlo replications, and the reported sd is therefore a
+  lower bound on true run-to-run spread.
 - **Task identity is a spatial hash.** At `task_cell_size` 0.30, 21.3% of
   paired sightings of one weed hash to different task IDs, and two genuine
   weeds can occasionally share a cell. So `redundant_treatments` measures grid
@@ -316,6 +343,11 @@ threshold study worth reporting would simulate each threshold directly.
 - **Idle draw has a units error.** The standby term integrates against
   simulated seconds; observed draw is ~1.07 W against a documented 0.2 W. It
   reaches ~2.5 kJ on a long mission, which biases slower runs.
+- **`experiments/configs/base.yaml` is not yet a single source of truth.**
+  Some values there are read by `run_batch.py` and some are shadowed by launch
+  arguments or node defaults. Until that is reconciled, the authoritative
+  settings for any published run are the ones recorded in the `command` column
+  of `results/*.csv`.
 - **Field bounds derive from weed extent rather than the lanes file**, in both
   the executor and the scorer, so a few legitimate edge detections are
   discarded and robots occasionally overshoot the headland margin chasing a
@@ -325,3 +357,7 @@ threshold study worth reporting would simulate each threshold directly.
   truth. Measured lateral error (3.4e-5 m over 1178 m) characterises the
   simulator, not the controller. The 9.5 cm per-side lane clearance is a
   geometric bound, verified against logged pose but not against pose noise.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).
