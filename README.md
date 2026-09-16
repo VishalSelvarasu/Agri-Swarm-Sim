@@ -105,15 +105,25 @@ predate the rename; the script normalises it.
 
 ### Three things that came out of getting there
 
-**Contention is zero, and that is evidence rather than an assumption.** Over a
-representative mission: 160 awards across 160 distinct (task, round) pairs,
-mean 4.03 bids per award, minimum 4. Zero conflicting award rounds, zero
-re-announcements, zero abandonments. On single-machine loopback DDS with
-reliable QoS, every robot bids on every task and exactly one wins, every time.
-Split-brain is measured from the award stream — two awards for one (task,
-round) naming different winners — so it does not depend on any allocator
-noticing the conflict. `analysis/score_run.py` reports incidence and detection
-coverage separately for exactly that reason.
+**Contention is rare, not absent — and when it happens, conceding does not
+prevent duplicated work.** Across the 120 committed runs: split-brain in 6 runs
+(18 conflicting award rounds), re-announcement in 50 runs (178 events),
+abandonment in 21 runs (33 tasks), duplicate treatments in 6 runs (13
+treatments). A single mission inspected by hand showed none of these, which is
+why an earlier version of this file claimed zero; the batch says otherwise.
+
+The interesting part is the correlation. **Five of the six runs with a
+split-brain also recorded a duplicated treatment**, and the counts track — a run
+with 8 split-brains recorded 5 duplicates, one with 3 recorded 3. When an
+allocator concedes it clears its own `committed_` list, but it has already
+published an award that its own executor consumed, and nothing retracts that.
+Both robots drive to the weed and both spray it. The concession path is
+cosmetic at the executor level, and this is measured rather than argued.
+
+Split-brain is detected from the award stream — two awards for one
+(task, round) naming different winners — so the count does not depend on any
+allocator noticing the conflict. `analysis/score_run.py` reports incidence and
+detection coverage separately for exactly that reason.
 
 **Mission energy was estimated at 1.6 kJ per robot and measured at 11–19 kJ.**
 The estimate had never been probed. About 90% of distance travelled is
@@ -320,12 +330,16 @@ threshold study worth reporting would simulate each threshold directly.
   above. Making the auction genuinely confidence-aware needs confidence to
   enter asymmetrically — per-robot detection estimates, or an expected-value
   formulation that trades benefit against cost — and a re-run.
-- **Contention is structurally absent.** Loopback DDS with reliable QoS loses
-  nothing, so split-brain and re-announcement rates are zero by construction
-  rather than by protocol quality. The re-announcement and concession machinery
-  is implemented but not experimentally validated. Producing non-zero rates
-  needs induced faults — `fail_robot`, or a lossy QoS profile — reported as a
-  separate fault-condition study.
+- **Contention is too rare to compare policies on.** Loopback DDS with
+  reliable QoS loses almost nothing, so split-brain appears in about 5% of
+  runs and is indistinguishable between bid modes (8 events vs 7 in condition
+  A). The concession path is implemented but demonstrably incomplete: it
+  clears the allocator's commitment without retracting the award its own
+  executor already took, so five of six split-brain runs produced duplicated
+  treatments. Fixing it means an award retraction message or an executor-side
+  check against the conceded winner. Producing contention rates high enough to
+  compare policies would need induced faults — `fail_robot`, or a lossy QoS
+  profile — as a separate fault-condition study.
 - **The energy budget is reserve-gated, not a hard battery.** The allocator
   refuses new work below the reserve fraction, but nothing forces a robot to
   stop or return at zero, and committed future tasks are not reserved against.
