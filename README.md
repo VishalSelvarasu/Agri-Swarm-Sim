@@ -7,8 +7,9 @@ sweep to treat it, then resumes where it left off. Robots cannot drive onto a
 crop row, so they stop alongside and spray laterally. Cross-lane work routes
 via the headland.
 
-The study compares two bid functions — nearest-robot versus confidence-weighted
-energy cost — over 120 simulated missions.
+The study ablates the bid function: a greedy nearest-robot baseline against
+bidding on state of charge and predicted energy cost, over 120 simulated
+missions.
 
 ROS 2 Jazzy, Gazebo Harmonic, Ubuntu 24.04. Simulation only.
 
@@ -27,26 +28,62 @@ Gazebo shows the physics; this shows the allocation.*
 
 ## Result
 
-**No detectable difference between the two bid functions**, under either a
-slack or a binding energy constraint. Paired by seed, completed runs only.
+### The bid function was not doing what it was named for
 
-| condition | seeds × reps | `total_energy_j` Δ | SE | recall Δ | SE |
+The second arm was called `confidence_energy` and was meant to weight bids by
+detector confidence. Its utility is
+
+```
+U_i = c_t^γ · SoC_i / (E_i + 1)
+```
+
+`c_t` is a property of the task, not of the bidder. Within one auction every
+robot bids on the same task, so every bid carries the same factor and it
+cancels out of the `argmax`. Two robots keep their relative ranking at any
+confidence. `conf_gamma` does not help — raising a shared factor to a power
+leaves it shared.
+
+Confidence still gates *whether a task exists*, through
+`treat_confidence_threshold`. It never decided *who serviced it*.
+
+So the ablation compares a **greedy nearest-robot baseline** against
+**state-of-charge and energy-cost bidding**, and never compared anything
+confidence-aware. The mode is now called `energy_aware`, and the invariance is
+pinned by `test_energy_aware_ranking_ignores_task_confidence` in
+`src/agri_swarm_allocation/test/test_utility.cpp` so it cannot drift back
+unnoticed.
+
+Run directories and `results.csv` rows produced before the rename still say
+`confidence_energy`; `parse_bid_mode` accepts it as an alias so old artifacts
+stay readable.
+
+### No detectable difference between the two bid functions
+
+Under either a slack or a binding energy constraint. Paired by seed, completed
+runs only.
+
+| condition | seeds × reps | `total_energy_j` Δ | 95% CI | recall Δ | 95% CI |
 |---|---|---|---|---|---|
-| A — 22 kJ pack, reserve gate never fires | 20 × 2 | −799 J | 840 | −0.0022 | 0.0108 |
-| B — 16 kJ pack, gate fires near end of mission | 10 × 2 | +1273 J | 1027 | +0.0044 | 0.0142 |
+| A — 22 kJ pack, reserve gate never fires | 20 × 2 | −799 J | [−2445, +847] | −0.0022 | [−0.023, +0.019] |
+| B — 16 kJ pack, gate fires near end of mission | 10 × 2 | +1273 J | [−740, +3286] | +0.0044 | [−0.023, +0.032] |
 
-Δ is `confidence_energy` minus `distance`. Both sit inside one standard error,
-the signs disagree between the two conditions, and seed-level win counts
-(14/20 and 4/10 on energy) are what coin flips look like. Run-to-run variance
-at fixed seed is sd 3755 J against a mean total of ~50 kJ, so resolving the
-observed 1.6% difference would need roughly 350 seeds.
+Δ is `energy_aware` minus `distance`, on a mean total of ~50 kJ. Both intervals
+straddle zero, the signs disagree between conditions, and seed-level win counts
+(14/20 and 4/10 on energy) are what coin flips look like.
+
+What this does **not** say is that the policies are equivalent. Condition A is
+compatible with anything from a 5% energy saving to a 2% increase. It says the
+experiment cannot distinguish them at this sample size: the sd of the paired
+per-seed difference is 3755 J, so detecting an effect the size of the one
+observed at 80% power would take roughly 170 paired seeds rather than 20. If
+equivalence is the question, it needs a pre-declared margin — say |ΔE| < 5% —
+and a test that the interval falls inside it.
 
 Recall ran 0.56–0.84 across the batch, typically ~0.72. Every completed run
 finished all four lane sweeps.
 
 This is reported as a null because it is one. An effect found by tuning until
-one appears is worth less than an honest negative with the power calculation
-attached.
+one appears is worth less than an honest negative with its interval attached.
 
 ### Three things that came out of getting there
 
@@ -84,7 +121,7 @@ on the geometric argument alone.
 | **Custom 90-line diff-drive robot, not TurtleBot3** | TB3's value was its sensor suite. With the camera gone that value is gone, and TB3 on Jazzy/Harmonic was the stack's largest dependency risk. |
 | **Interfaces before nodes** | The auction protocol was one vague line in the charter. Writing the messages first forced bid deadlines, rounds, and tie-breaking to be decided up front instead of surfacing later as race conditions. |
 | **World is generated, not authored** | `generate_field.py --seed N` is a pure function: same seed, byte-identical SDF and ground truth. This is what makes a 20-seed harness possible rather than a retrofit. |
-| **Allocator in C++** | The ablation lives in one ROS-free header with 832 assertions behind it, and it is the part of the system most worth writing in the language the domain uses. |
+| **Allocator in C++, ablation in one header** | The whole comparison lives in `utility.hpp` with 840 assertions behind it, and a test forbids any other file from branching on the mode. That constraint is what made the rank-invariance visible: with the utility in one place, it is four lines to read and check. |
 | **Interrupt execution, not two-pass** | Two-pass makes allocation a static assignment solved with complete information. Under that, both bid modes converge and the ablation shows nothing by construction. |
 | **Robots never drive to a weed** | 54 of 79 weeds sit on a crop row. The outer wheel track (0.34 m) cannot enter a 0.22 m row from a lane 0.375 m away. Treating means driving along the lane to the weed's x and spraying sideways. |
 | **Run status comes from the log, not the exit code** | Nodes lose races against context teardown and exit 1 on runs that completed perfectly; a run truncated by the mission timeout exits 0. `mission complete` in the log is the only reliable signal. |
@@ -98,11 +135,13 @@ treatment uses *p* plus false positives. At realistic densities that is an
 waypoint list and no swarm. The defensible output is a curve: weeds treated
 against false positives, swept over the treatment confidence threshold.
 
-**"Faster or comparable time-to-95%-coverage vs. distance-only auction" is a
-claim you should expect to lose.** Distance-only bidding *is* the
-distance-optimal assignment; weighting by confidence deliberately deviates from
-it. If confidence-weighted had also won on time, the right response would be to
-suspect a rigged baseline before believing it. As measured, neither wins.
+**"Faster or comparable time-to-95%-coverage vs. distance-only auction" set up
+a comparison the baseline was likely to win.** Nearest-robot bidding minimises
+immediate travel for the task in front of it; any deviation from it pays travel
+to buy something else. It is *not* globally optimal — with queues, routing and
+dynamic arrivals, greedy nearest assignment minimises neither total travel nor
+makespan — but it is a strong baseline to beat on time. As measured, neither
+arm wins.
 
 ---
 
@@ -139,18 +178,19 @@ ros2 launch agri_swarm_bringup swarm.launch.py \
 
 Missions end themselves: every executor publishes `mission_idle`, and the run
 logger shuts the graph down once all of them have held idle for
-`quiet_period_s`. A full mission is about 2000 simulated seconds, roughly
-7 minutes of wall clock headless.
+`quiet_period_s`. A full mission is about 2000 simulated seconds; wall clock
+was 285–540 s across 120 headless runs on a 16-thread laptop, and depends on
+hardware and real-time factor.
 
 Swap `bid_mode:=distance` for the ablation baseline. That is the only change
 required between the two arms — if it ever isn't, the ablation has leaked out
-of `Allocator::utility()` and the comparison is no longer clean.
+of `utility()` and the comparison is no longer clean.
 
 The whole grid, resumable and unattended:
 
 ```bash
 python3 experiments/run_batch.py \
-    --bid-modes distance confidence_energy --repeats 2 \
+    --bid-modes distance energy_aware --repeats 2 \
     --treat-threshold 0.5 --timeout 2400 --energy-capacity 16000 \
     --out ~/agri-runs/batch
 ```
@@ -188,11 +228,11 @@ ros2 launch agri_swarm_bringup swarm.launch.py \
 
 The second arm of the ablation, same seed and capacity:
 
-![Replay of a confidence-energy mission](docs/sweep_confidence_energy.gif)
+![Replay of an energy-aware mission](docs/sweep_energy_aware.gif)
 
 ## Tests
 
-259 pytest cases and 832 C++ assertions, all runnable on a machine with **no
+259 pytest cases and 840 C++ assertions, all runnable on a machine with **no
 ROS 2 installed**. Everything verifiable without a simulator is verified
 without one, so the untested surface is exactly the ROS plumbing.
 
@@ -204,26 +244,28 @@ g++ -std=c++17 -Wall -Wextra -Wpedantic -Werror \
 python3 -m pytest tests/ -q
 ```
 
-Two of these are guard rails rather than unit tests, and they matter most:
+Three of these are guard rails rather than unit tests, and they matter most:
 
 - the allocator package must contain no reference to `ground_truth` or
   `patch_id` — if the bidding path ever reads the oracle, the experiment is
   invalid rather than merely wrong;
 - nothing outside `utility.hpp` may branch on `bid_mode` — if the ablation
   leaks into a second file, the two arms differ by more than one function and
-  the comparison is void.
+  the comparison is void;
+- the `energy_aware` ranking between two bidders must not change with task
+  confidence — the property that turned out to define what this ablation
+  actually measures.
 
-CI (`.github/workflows/ci.yml`) runs both plus a syntax and manifest check. It
-deliberately does not run `colcon build`: a green badge means the maths is
-right, not that the system runs.
+CI (`.github/workflows/ci.yml`) runs both suites plus a syntax and manifest
+check. It deliberately does not run `colcon build`: a green badge means the
+maths is right, not that the system runs.
 
 ## Scoring and run budget
 
 `analysis/score_run.py` joins a treatment log against `ground_truth_<seed>.csv`
-and sweeps the treatment confidence threshold **offline**. Robots drive the
-generated lanes regardless of the threshold, so one simulated run per cell at
-the lowest threshold yields the whole curve — the difference between ~560 runs
-and 40.
+and sweeps the treatment confidence threshold **offline**. One simulated run
+per cell at the lowest threshold yields the whole curve — the difference
+between ~560 runs and 40.
 
 Threshold is therefore not a sweep axis. Repeats are: run-to-run variance is
 large enough that a single run per cell cannot separate a bid-mode effect from
@@ -236,23 +278,37 @@ python3 analysis/score_run.py \
     --out-contention $HOME/agri-runs/base/contention.csv
 ```
 
-Caveat, stated because it is load-bearing: `mission_time_s` and
-`total_energy_j` do depend on the threshold and are valid only at the one
-actually simulated. Treatment counts and derived precision/recall are valid
-across the sweep. Contention figures are valid only at the executed threshold
-and cannot be recovered offline.
+Two caveats, both load-bearing. `mission_time_s` and `total_energy_j` depend on
+the threshold and are valid only at the one actually simulated; treatment
+counts and derived precision/recall are valid across the sweep. And the offline
+sweep is a filter, not a counterfactual: the system is closed loop, so a task
+that existed at threshold 0.5 changed where its robot went, which changed what
+it later saw. Reading the curve at 0.8 is not the same as having run at 0.8.
+The ablation itself is unaffected — every run in it executed at a fixed
+threshold of 0.5 — but the curve should be read as an indication, and a
+threshold study worth reporting would simulate each threshold directly.
 
 ## Limitations
 
+- **Confidence gates task creation, not allocation.** See the first result
+  above. Making the auction genuinely confidence-aware needs confidence to
+  enter asymmetrically — per-robot detection estimates, or an expected-value
+  formulation that trades benefit against cost — and a re-run.
 - **Contention is structurally absent.** Loopback DDS with reliable QoS loses
   nothing, so split-brain and re-announcement rates are zero by construction
-  rather than by protocol quality. Producing non-zero rates would need induced
-  faults — `fail_robot`, or a lossy QoS profile — reported as a separate
-  fault-condition study.
-- **`redundant_treatments` is noise-dominated.** At `task_cell_size` 0.30,
-  21.3% of paired sightings of one weed hash to different task IDs, so the
-  metric measures grid fragmentation more than allocation quality. The floor is
-  reported rather than tuned away.
+  rather than by protocol quality. The re-announcement and concession machinery
+  is implemented but not experimentally validated. Producing non-zero rates
+  needs induced faults — `fail_robot`, or a lossy QoS profile — reported as a
+  separate fault-condition study.
+- **The energy budget is reserve-gated, not a hard battery.** The allocator
+  refuses new work below the reserve fraction, but nothing forces a robot to
+  stop or return at zero, and committed future tasks are not reserved against.
+  "Binding constraint" above means the gate fires, not that the robot dies.
+- **Task identity is a spatial hash.** At `task_cell_size` 0.30, 21.3% of
+  paired sightings of one weed hash to different task IDs, and two genuine
+  weeds can occasionally share a cell. So `redundant_treatments` measures grid
+  fragmentation more than allocation quality, and the hash should not be
+  mistaken for data association. The floor is reported rather than tuned away.
 - **`travel_cost_m` is Euclidean.** `submitBid` uses `std::hypot`, which for a
   task two lanes over reports a straight line through crop rows. Both bid modes
   are wrong identically, so the comparison survives, but cross-lane awards are

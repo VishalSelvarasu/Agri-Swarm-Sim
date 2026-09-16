@@ -3,12 +3,13 @@
   <name>agri_swarm_allocation</name>
   <version>0.1.0</version>
   <description>Decentralized confidence/energy-weighted auction allocator.</description>
-  <maintainer email="you@example.com">Vishal Selvarasu</maintainer>
+  <maintainer email="vishalselvarasu@gmail.com">Vishal Selvarasu</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>agri_swarm_msgs</depend>
 
   <export><build_type>ament_cmake</build_type></export>
