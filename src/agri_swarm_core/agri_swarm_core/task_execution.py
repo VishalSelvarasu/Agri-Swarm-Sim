@@ -210,23 +210,6 @@ def resume_after_station(
     end = lane_segment_end(waypoints, current_index)
     i = index_ahead(waypoints[:end + 1], station_x, direction, start=0)
     return min(i, end)
-    """Index at which to rejoin the lane path after treating.
- 
-    Bounded by the end of the current lane. When the station lies beyond that
-    -- behind the robot, or past the end of the sweep -- the robot rejoins
-    where it left off rather than skipping forward.
- 
-    The unbounded version of this returned len(waypoints) for a station behind
-    the robot, which clamped to the LAST waypoint of the entire sweep: the
-    robot drove to the end of the field and every later detour resumed there
-    too, so it never covered its lanes.
-    """
-    if not waypoints:
-        raise ValueError("empty path")
-    current_index = min(max(current_index, 0), len(waypoints) - 1)
-    end = lane_segment_end(waypoints, current_index)
-    i = index_ahead(waypoints[:end + 1], station_x, direction, start=current_index)
-    return current_index if i > end else i
  
  
 def select_next_task(
@@ -495,10 +478,19 @@ def detour_cost_j(
     energy_per_m_j: float,
     treat_cost_j: float,
 ) -> float:
-    """Energy for a detour, treatment and return, along the planned path.
- 
-    Uses the actual routed path rather than straight-line distance, so it
-    exceeds the allocator's Euclidean estimate for cross-lane tasks.
+    """Energy for a detour, treatment and return.
+
+    The outbound leg is the routed path -- every waypoint the plan actually
+    visits, including a headland transit -- so for cross-lane tasks it
+    exceeds the allocator's straight-line estimate. The return leg is NOT
+    routed: it is the Euclidean distance from the station to the resume
+    point, which for a cross-lane return cuts through crop rows the robot
+    cannot cross. This figure is therefore a lower bound on the true round
+    trip -- tight for in-lane work, optimistic across lanes.
+
+    Routing the return would mean threading headland_x through here and
+    reusing return_waypoints(). Worth doing if this ever feeds a bid; it
+    currently does not.
     """
     out = path_length_m([pose] + list(plan.waypoints))
     back = math.dist((plan.station.x, plan.station.y), resume_point)
