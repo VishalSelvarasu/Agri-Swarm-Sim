@@ -277,9 +277,14 @@ Three of these are guard rails rather than unit tests, and they matter most:
   confidence — the property that turned out to define what this ablation
   actually measures.
 
-CI (`.github/workflows/ci.yml`) runs both suites plus a syntax and manifest
-check. It deliberately does not run `colcon build`: a green badge means the
-maths is right, not that the system runs.
+CI (`.github/workflows/ci.yml`) runs both suites, a syntax and manifest check,
+and a fourth job that builds the workspace in a ROS 2 Jazzy container:
+`rosdep install` from the manifests, `colcon build`, an import of the generated
+interfaces, and `ros2 launch --show-args`. That last set exists because the
+ROS-free jobs cannot catch an undeclared dependency or a message that stopped
+generating. It does not launch Gazebo — a smoke launch that passes says nothing
+about a 2000-second mission. Green means the maths is right and the workspace
+builds clean from a checkout.
 
 ## Scoring and run budget
 
@@ -343,11 +348,13 @@ threshold study worth reporting would simulate each threshold directly.
 - **Idle draw has a units error.** The standby term integrates against
   simulated seconds; observed draw is ~1.07 W against a documented 0.2 W. It
   reaches ~2.5 kJ on a long mission, which biases slower runs.
-- **`experiments/configs/base.yaml` is not yet a single source of truth.**
-  Some values there are read by `run_batch.py` and some are shadowed by launch
-  arguments or node defaults. Until that is reconciled, the authoritative
-  settings for any published run are the ones recorded in the `command` column
-  of `results/*.csv`.
+- **Configuration lives in two places, and the file says which.**
+  `experiments/configs/base.yaml` holds what `run_batch.py` reads; everything
+  else — detector noise, energy constants, timeouts — lives in node parameter
+  declarations and launch arguments, recorded under `node_defaults` in that
+  file as documentation rather than as settings. Editing a `node_defaults`
+  value changes nothing. The authoritative settings for any published run are
+  in the `command` column of `results/*.csv`.
 - **Field bounds derive from weed extent rather than the lanes file**, in both
   the executor and the scorer, so a few legitimate edge detections are
   discarded and robots occasionally overshoot the headland margin chasing a
