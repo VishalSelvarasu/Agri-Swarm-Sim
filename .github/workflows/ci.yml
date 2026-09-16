@@ -1,16 +1,4 @@
-name: unit tests (ROS-free)
-
-# Deliberately honest scope: this workflow does NOT build the ROS 2 packages.
-# No colcon, no Gazebo, no rclcpp. It runs the parts of the repo that were
-# written to be testable without them:
-#
-#   * agri_swarm_allocation/include/.../utility.hpp   -- the bid ablation
-#   * agri_swarm_core/.../pure_pursuit.py             -- lane + control maths
-#   * analysis/score_run.py                           -- the offline scorer
-#   * generate_field.py determinism
-#
-# A green badge here means the maths is right. It does not mean the system
-# runs. Do not let it imply otherwise in the README.
+name: tests
 
 on:
   push:
@@ -70,3 +58,70 @@ jobs:
               print(bad); sys.exit(1)
           print(f"{len(glob.glob('src/*/package.xml'))} manifests OK")
           PY
+
+  ros:
+    name: workspace builds (ROS 2 Jazzy)
+    runs-on: ubuntu-24.04
+    container: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src_checkout
+
+      # colcon expects packages under src/. The repo already has that layout,
+      # so the checkout is moved rather than copied package by package.
+      - name: Lay out the workspace
+        run: |
+          mkdir -p ws
+          mv src_checkout/src ws/src
+          mv src_checkout ws/repo
+
+      # This is the step that justifies the job. rosdep resolves what the
+      # manifests declare, so a dependency used in code but missing from a
+      # package.xml fails here and nowhere else.
+      - name: Resolve declared dependencies
+        shell: bash
+        working-directory: ws
+        run: |
+          apt-get update
+          rosdep update --rosdistro jazzy
+          rosdep install --from-paths src --ignore-src -y --rosdistro jazzy \
+            --skip-keys "ros_gz_sim ros_gz_bridge"
+
+      # ros_gz is skipped above: it pulls the whole Gazebo stack, which is a
+      # large download for a job that never renders anything. agri_swarm_bringup
+      # depends on it at exec time only, so the build does not need it.
+      - name: colcon build
+        shell: bash
+        working-directory: ws
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --event-handlers console_direct+
+
+      # Importing the generated message package is the cheapest proof that
+      # rosidl actually produced something, not just that CMake succeeded.
+      - name: Generated interfaces import
+        shell: bash
+        working-directory: ws
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          python3 -c "
+          from agri_swarm_msgs.msg import (
+              Bid, RobotState, SwarmEvent, TaskAnnouncement, TaskAward,
+              Treatment, WeedDetection)
+          f = SwarmEvent.get_fields_and_field_types()
+          assert len(f) == 12, f
+          assert SwarmEvent.EVENT_SPLIT_BRAIN == 2
+          print('7 interfaces import; SwarmEvent has', len(f), 'fields')
+          "
+
+      # The launch file is executed, not merely parsed: a missing import or a
+      # typo in an argument name only shows up when it is described.
+      - name: Launch file is describable
+        shell: bash
+        working-directory: ws
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ros2 launch agri_swarm_bringup swarm.launch.py --show-args
