@@ -33,9 +33,9 @@ Gazebo shows the physics; this shows the allocation.*
 The second arm was called `confidence_energy` and was meant to weight bids by
 detector confidence. Its utility is
 
-```
+````
 U_i = c_t^γ · SoC_i / (E_i + 1)
-```
+````
 
 `c_t` is a property of the task, not of the bidder. Within one auction every
 robot bids on the same task, so every bid carries the same factor and it
@@ -64,37 +64,99 @@ runs only.
 
 | condition | seeds × reps | `total_energy_j` Δ | 95% CI | recall Δ | 95% CI |
 |---|---|---|---|---|---|
-| A — 22 kJ pack, reserve gate never fires | 20 × 2 | −799 J | [−2444, +847] | −0.0022 | [−0.023, +0.019] |
-| B — 16 kJ pack, gate fires near end of mission | 10 × 2 | +1273 J | [−739, +3285] | +0.0044 | [−0.023, +0.032] |
+| A — 22 kJ pack, reserve gate never fires | 20 × 2 | −799 J | [−2556, +959] | −0.0022 | [−0.0248, +0.0204] |
+| B — 16 kJ pack, gate fires near end of mission | 10 × 2 | +1273 J | [−1049, +3595] | +0.0044 | [−0.0276, +0.0364] |
 
-Δ is `energy_aware` minus `distance`, on a mean total of ~50 kJ. Both intervals
-straddle zero, the signs disagree between conditions, and seed-level win counts
-(14/20 and 4/10 on energy) are what coin flips look like.
+Δ is `energy_aware` minus `distance`, on a mean total of ~50 kJ. Intervals are
+Student's t on the paired per-seed difference. Both straddle zero, the signs
+disagree between conditions, and seed-level win counts (14/20 and 4/10 on
+energy) are what coin flips look like.
 
-What this does **not** say is that the policies are equivalent. Condition A is
-compatible with anything from a 5% energy saving to a 2% increase. It says the
-experiment cannot distinguish them at this sample size: the sd of the paired
-per-seed difference is 3755 J, so detecting an effect the size of the one
-observed at 80% power would take roughly 174 paired seeds rather than 20. If
-equivalence is the question, it needs a pre-declared margin — say |ΔE| < 5% —
-and a test that the interval falls inside it.
+What this does **not** say is that the policies are equivalent. What it does say
+is how small an effect this design could have seen. The minimum detectable
+difference at 80% power is 2.5 kJ in condition A — about 5% of fleet energy —
+and 3.2 kJ, about 7%, in condition B. Anything smaller was never visible.
+Observed power is deliberately not reported: the sample size that would have
+made the measured difference significant is only a restatement of the p-value.
+If equivalence is the question it needs a margin declared in advance and a test
+that the interval falls inside it; for reference, the widest symmetric margin
+the 90% energy interval fits inside is 4.5% in A and 6.9% in B.
 
-Recall ran 0.56–0.84 across the batch, typically ~0.72. Every completed run
-finished all four lane sweeps.
+Recall ran 0.56–0.84 across the batch, typically ~0.71. Every completed run
+finished all four lane sweeps. Runs that failed to finish were retried, and the
+failures do not depend on the bid mode: 4 of 44 against 2 of 42 in condition A
+(Fisher exact p = 0.68), 2 of 22 against 3 of 23 in B (p = 1.00).
 
 This is reported as a null because it is one. An effect found by tuning until
 one appears is worth less than an honest negative with its interval attached.
+
+### The two bid functions almost never choose differently
+
+A null is more useful with a mechanism attached, so the bids themselves are now
+logged — every published `Bid` carries its travel cost, energy cost, remaining
+energy and feasibility — and `analysis/decision_overlap.py` replays each
+auction offline, recomputing the winner under *both* utilities from the same
+bid set.
+
+Across 8 diagnostic runs (2 seeds × 2 bid modes × both pack sizes), **13 of
+1550 contested auctions — 0.84% — would have gone to a different robot**. The
+worst single run was 2.6%; one seed produced none at all. The extra travel
+those choices imply is at most 0.26% of a run's energy. Two checks guard the
+replay, and both read 100% in all 8 runs: the recomputed winner matches the
+award the allocator actually published, and it matches the argmax of the logged
+utility.
+
+The reason is visible in the utility itself. A bid's energy cost is
+`12 J/m × distance + 30 J`, so `SoC / (E + 1)` is a strictly decreasing
+function of distance. With every bidder at the same state of charge the
+energy-aware ranking *is* the distance ranking; the two modes can only differ
+when one bidder's charge exceeds another's by more than their cost ratio, which
+is rare before the packs have diverged.
+
+That shows up in the batch as well. Each cell was run twice, so the spread
+between two repeats of the *same* mode can be compared with the spread between
+the two modes:
+
+| condition | metric | same-mode rerun sd | mode-vs-mode paired sd |
+|---|---|---|---|
+| A — 22 kJ | total energy | 4293 J | 3755 J |
+| A — 22 kJ | recall | 0.042 | 0.048 |
+| A — 22 kJ | mission time | 662 s | 577 s |
+| B — 16 kJ | total energy | 3416 J | 3247 J |
+| B — 16 kJ | recall | 0.035 | 0.045 |
+| B — 16 kJ | mission time | 181 s | 216 s |
+
+Switching bid modes moves the outcome about as much as running the same bid
+mode twice. For a policy that changes under 1% of decisions, that is what it
+should do — and it is a better answer than the null alone, because it says
+*why* rather than only *whether*.
 
 ### Reproducing the table
 
 Both result sets are in the repository, and every figure above comes out of
 them:
 
-```bash
+````bash
 python3 analysis/compare_modes.py results/slack_22kj.csv
 python3 analysis/compare_modes.py results/binding_16kj.csv
 python3 analysis/compare_modes.py results/slack_22kj.csv --per-seed
-```
+python3 analysis/compare_modes.py results/slack_22kj.csv --exclude-seed 15
+````
+
+`compare_modes.py` needs nothing but the standard library. It prints the paired
+difference, a t interval, the minimum detectable effect, timeouts by mode with
+a Fisher exact test, and a warning for any completed run far longer than the
+median — seed 15 in condition A took 7113 simulated seconds against a median of
+2222, and carries the whole positive mission-time difference there, which is
+why the `--exclude-seed` line is worth running.
+
+The decision-overlap tables are committed as `results/overlap_*.csv`.
+Regenerating them needs the run directories, which hold `bids.csv` and are not
+in the repository:
+
+````bash
+python3 analysis/decision_overlap.py --results ~/agri-runs/diag16/results.csv
+````
 
 `results/*.csv` are `run_batch.py` output: one row per run, appended, with
 retried cells appearing more than once. `compare_modes.py` filters on
@@ -113,10 +175,13 @@ treatments). A single mission inspected by hand showed none of these, which is
 why an earlier version of this file claimed zero; the batch says otherwise.
 
 The interesting part is the correlation. **Five of the six runs with a
-split-brain also recorded a duplicated treatment**, and the counts track — a run
-with 8 split-brains recorded 5 duplicates, one with 3 recorded 3. When an
-allocator concedes it clears its own `committed_` list, but it has already
-published an award that its own executor consumed, and nothing retracts that.
+split-brain also recorded a duplicated treatment.** The per-run counts are
+looser than that pairing suggests — 4 split-brains with 1 duplicate, 8 with 5,
+3 with 3, 1 with 2, 1 with 1, and one split-brain run with none — and one run
+recorded a duplicate with no split-brain at all, so at least one duplicate has
+some other cause. When an allocator concedes it clears its own `committed_`
+list, but it has already published an award that its own executor consumed, and
+nothing retracts that.
 Both robots drive to the weed and both spray it. The concession path is
 cosmetic at the executor level, and this is measured rather than argued.
 
@@ -125,12 +190,19 @@ Split-brain is detected from the award stream — two awards for one
 allocator noticing the conflict. `analysis/score_run.py` reports incidence and
 detection coverage separately for exactly that reason.
 
-**Mission energy was estimated at 1.6 kJ per robot and measured at 11–19 kJ.**
+**Mission energy was estimated at 1.6 kJ per robot and came out at 11–19 kJ.**
 The estimate had never been probed. About 90% of distance travelled is
 discretionary detour rather than lane sweeping: in one run a robot covered
 1406 m against a lane length of roughly 100 m. That is the real cost of
 interrupt execution, and it is also what gives the bid function something to
 act on.
+
+Energy here is modelled, not measured. The monitor integrates 12 J per metre,
+30 J per treatment and a 0.2 W standby draw; a regression over the 120 runs
+recovers exactly those three constants with R² = 1.000, and distance accounts
+for 89% of the total. The energy comparison is therefore a distance comparison
+with a standby term attached, which is worth knowing before reading anything
+into it.
 
 **Robots never crossed a crop row.** Across two runs and over 16,000 logged
 poses, zero in-field poses fall between lanes. Every off-lane pose is at the
@@ -175,7 +247,7 @@ arm wins.
 
 ## Layout
 
-```
+````
 src/agri_swarm_msgs/          6 interfaces: the auction protocol, pinned down
 src/agri_swarm_core/          detector, field generator, executors, run logger
 src/agri_swarm_allocation/    C++ decentralized auction — the core contribution
@@ -183,17 +255,19 @@ src/agri_swarm_description/   diff-drive robot, no camera
 src/agri_swarm_bringup/       namespaced N-robot launch, with mission shutdown
 analysis/score_run.py         offline scorer, threshold sweep, contention
 analysis/compare_modes.py     the paired ablation table, from committed results
+analysis/decision_overlap.py  replays auctions under both utilities, offline
 analysis/replay.py            top-down animation of a run, from its own logs
 scripts/stage_field.py        dressed world for screenshots and video
 experiments/run_batch.py      (seed × bid_mode × repeat) runner, resumable
 experiments/configs/          experiment defaults
-results/                      the 120 runs behind the table above
+results/                      the 120 runs behind the table above, plus the
+                              8 diagnostic runs and their decision overlap
 docs/                         the figures in this file
-```
+````
 
 ## Run it
 
-```bash
+````bash
 source /opt/ros/jazzy/setup.bash        # build shell: this only
 colcon build
 source install/setup.bash
@@ -205,13 +279,13 @@ ros2 launch agri_swarm_bringup swarm.launch.py \
     energy_capacity_j:=16000 \
     treatments_csv:=$HOME/agri-runs/base/treatments.csv \
     use_allocator:=true headless:=true
-```
+````
 
 Missions end themselves: every executor publishes `mission_idle`, and the run
 logger shuts the graph down once all of them have held idle for
 `quiet_period_s`. A full mission is about 2000 simulated seconds; wall clock
-was 285–540 s across 120 headless runs on a 16-thread laptop, and depends on
-hardware and real-time factor.
+was 300–1240 s across 120 headless runs on a 16-thread laptop, averaging about
+400 s, and depends on hardware and real-time factor.
 
 Swap `bid_mode:=distance` for the ablation baseline. That is the only change
 required between the two arms — if it ever isn't, the ablation has leaked out
@@ -219,12 +293,12 @@ of `utility()` and the comparison is no longer clean.
 
 The whole grid, resumable and unattended:
 
-```bash
+````bash
 python3 experiments/run_batch.py \
     --bid-modes distance energy_aware --repeats 2 \
     --treat-threshold 0.5 --timeout 2400 --energy-capacity 16000 \
     --out ~/agri-runs/batch
-```
+````
 
 It reaps stray processes between runs, generates missing fields, scores each
 run inline, judges success from the log, and skips cells already recorded `ok`
@@ -238,24 +312,24 @@ animates a finished run top-down from its own CSVs — weeds turning grey to
 green as they are treated, robot tracks from logged pose, a line from each
 award to its winner, and a live recall counter.
 
-```bash
+````bash
 python3 analysis/replay.py \
     --lanes $HOME/agri-worlds/lanes_0.csv \
     --ground-truth $HOME/agri-worlds/ground_truth_0.csv \
     --treatments $HOME/agri-runs/base/treatments.csv \
     --out docs/sweep_distance.gif --speed 50 --fps 15 --trail-s 45
-```
+````
 
 For screenshots, `scripts/stage_field.py` writes a second world with the same
 lane and weed geometry but throttled to real time, with shadows, a trimmed
 ground plane, and crop rows drawn as plant clumps. Never run experiments
 against it — at 1× a mission takes hours.
 
-```bash
+````bash
 python3 scripts/stage_field.py --seed 0 --demo-seed 99
 ros2 launch agri_swarm_bringup swarm.launch.py \
     n_robots:=4 seed:=99 world_dir:=$HOME/agri-worlds headless:=false
-```
+````
 
 The second arm of the ablation, same seed and capacity:
 
@@ -263,17 +337,17 @@ The second arm of the ablation, same seed and capacity:
 
 ## Tests
 
-259 pytest cases and 840 C++ assertions, all runnable on a machine with **no
+544 pytest cases and 840 C++ assertions, all runnable on a machine with **no
 ROS 2 installed**. Everything verifiable without a simulator is verified
 without one, so the untested surface is exactly the ROS plumbing.
 
-```bash
+````bash
 g++ -std=c++17 -Wall -Wextra -Wpedantic -Werror \
     -Isrc/agri_swarm_allocation/include \
     src/agri_swarm_allocation/test/test_utility.cpp -o /tmp/test_utility && /tmp/test_utility
 
 python3 -m pytest tests/ -q
-```
+````
 
 Three of these are guard rails rather than unit tests, and they matter most:
 
@@ -307,12 +381,12 @@ Threshold is therefore not a sweep axis. Repeats are: run-to-run variance is
 large enough that a single run per cell cannot separate a bid-mode effect from
 noise.
 
-```bash
+````bash
 python3 analysis/score_run.py \
     --ground-truth $HOME/agri-worlds/ground_truth_0.csv \
     --treatments $HOME/agri-runs/base/treatments.csv \
     --out-contention $HOME/agri-runs/base/contention.csv
-```
+````
 
 Two caveats, both load-bearing. `mission_time_s` and `total_energy_j` depend on
 the threshold and are valid only at the one actually simulated; treatment
@@ -359,9 +433,12 @@ threshold study worth reporting would simulate each threshold directly.
   task two lanes over reports a straight line through crop rows. Both bid modes
   are wrong identically, so the comparison survives, but cross-lane awards are
   costed optimistically.
-- **Idle draw has a units error.** The standby term integrates against
-  simulated seconds; observed draw is ~1.07 W against a documented 0.2 W. It
-  reaches ~2.5 kJ on a long mission, which biases slower runs.
+- **Energy is a model, not a measurement.** `total_energy_j` is
+  `12 J/m × distance + 30 J × treatments + 0.2 W × mission time`, recovered
+  from the committed runs at R² = 1.000, of which distance is 89%. An earlier
+  version of this file claimed the standby term had a units error and drew
+  ~1.07 W; the committed data says it integrates at exactly the documented
+  0.2 W per robot, about 3.6% of fleet energy.
 - **Configuration lives in two places, and the file says which.**
   `experiments/configs/base.yaml` holds what `run_batch.py` reads; everything
   else — detector noise, energy constants, timeouts — lives in node parameter
@@ -369,10 +446,17 @@ threshold study worth reporting would simulate each threshold directly.
   file as documentation rather than as settings. Editing a `node_defaults`
   value changes nothing. The authoritative settings for any published run are
   in the `command` column of `results/*.csv`.
-- **Field bounds derive from weed extent rather than the lanes file**, in both
-  the executor and the scorer, so a few legitimate edge detections are
-  discarded and robots occasionally overshoot the headland margin chasing a
-  task that should have been rejected at award time.
+- **A dropped task is never released or re-announced.** The executor discards
+  an awarded task when it is outside the field, unreachable, or beyond detour
+  range after the sweep — 8.2 times per run across the 120 committed runs — but
+  the winning allocator clears its commitment only when a treatment arrives, so
+  each drop permanently consumes one of that robot's `max_committed` slots and
+  no one re-announces the task. The out-of-field cases, 78% of the total, are
+  false positives raised near the headland: the executor's bounds are the lane
+  span plus a margin, far wider than the detector's 0.03 m position noise, so
+  they cost auctions rather than recall. Only the unreachable cases, about 1.5
+  per run, can lose a real weed. The *scorer's* bounds do derive from weed
+  extent, which is a separate and cosmetic inconsistency.
 - **Sim-only, and the simulator is frictionless.**
   `gz::sim::systems::DiffDrive` has no slip model, so its odometry is ground
   truth. Measured lateral error (3.4e-5 m over 1178 m) characterises the
