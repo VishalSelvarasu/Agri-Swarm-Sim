@@ -41,18 +41,13 @@ DEFAULT_COMMAND = (
     "headless:=true use_allocator:=true"
 )
 
-# A run at a threshold below this treats detector noise: at 0.25 recall was
-# 0.101. The executed threshold must also equal min(--thresholds) in
-# score_run.py or the recovered curve's low end is fabricated.
 MIN_THRESHOLD = 0.5
-# Wall-clock floor for the per-run kill. A complete mission takes ~700 s.
 MIN_TIMEOUT_S = 1200.0
 
 SCORED = ("weeds_treated_frac", "intra_row_treated_frac", "precision",
           "redundant_treatments", "duplicate_task_treatments")
 CONTENDED = ("split_brain_awards", "reannounce_events", "abandon_events")
 
-# "robot_3: 415.8 m travelled, 30 treatments, 5889 J spent of 100000 J"
 ENERGY_RE = re.compile(
     r"(robot_\d+): ([\d.]+) m travelled, (\d+) treatments, ([\d.]+) J spent")
 COMPLETE_RE = re.compile(r"mission complete at (\d+)s")
@@ -71,11 +66,7 @@ def git_meta(repo: str) -> Dict[str, str]:
             "git_dirty": "1" if dirty and dirty != "unknown" else "0"}
 
 
-# launch signals the ruby wrapper, not the server it spawned, and does not
-# reliably reap its own nodes either. Six generations of orphans accumulated in
-# one session: four energy monitors and four executors per robot, plus multiple
-# ros_gz bridges forwarding the same odometry onto the same topic. It presented
-# as bad experimental results, never as an error.
+
 STRAY = "agri_swarm|gz sim|robot_state_publisher|parameter_bridge|ros_gz"
 
 
@@ -97,6 +88,23 @@ def reap_gazebo(grace_s: float = 15.0) -> bool:
     subprocess.run(["pkill", "-9", "-f", STRAY], check=False)
     time.sleep(3.0)
     return not strays_running()
+
+
+def set_aside(out_dir: str, tag: str) -> Optional[str]:
+    """Rename a non-empty run directory out of the way and return its new path.
+
+    A retried cell reuses its run_id, and therefore its directory. Without
+    this the successful retry overwrites run.log and the CSVs of the attempt
+    that hung, which are the only record of why it hung.
+    """
+    if not os.path.isdir(out_dir) or not os.listdir(out_dir):
+        return None
+    k = 1
+    while os.path.exists(f"{out_dir}.{tag}{k}"):
+        k += 1
+    dest = f"{out_dir}.{tag}{k}"
+    os.rename(out_dir, dest)
+    return dest
 
 
 def free_gb(path: str) -> float:
@@ -292,8 +300,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     timeout_s = (a.timeout if a.timeout is not None
                  else float(cfg["experiment"]["timeout_s"]))
 
-    # A run takes ~11 min of wall clock. A shorter kill truncates every
-    # mission and records it as wall_timeout.
     if timeout_s < MIN_TIMEOUT_S:
         print(f"ERROR: --timeout {timeout_s:.0f}s is below {MIN_TIMEOUT_S:.0f}s. "
               f"A full mission needs ~700s; anything tighter kills every run.",
@@ -372,11 +378,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 break
 
             out_dir = os.path.join(a.out, spec["run_id"])
+            moved = set_aside(out_dir, "prev")
+            if moved:
+                print(f"    kept earlier contents of {spec['run_id']} as "
+                      f"{os.path.basename(moved)}", flush=True)
             os.makedirs(out_dir, exist_ok=True)
             ensure_field(a.world_dir, spec["seed"], repo)
 
-            # Before, not only after: a server orphaned by an earlier crash
-            # would otherwise poison this run.
             if not reap_gazebo():
                 print("ABORT: a gz server survived SIGKILL. Every later run "
                       "would attach to its world.", file=sys.stderr)
@@ -394,6 +402,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 status = "wall_timeout"
             scored = score_run(repo, a.world_dir, spec["seed"], out_dir,
                                spec["treat_threshold"])
+
+            if status != "ok":
+                out_dir = set_aside(out_dir, "failed") or out_dir
 
             writer.writerow({**spec, **parsed, **scored, **meta,
                              "status": status,
