@@ -11,20 +11,12 @@ from rclpy.node import Node
 from std_msgs.msg import Bool
 
 from agri_swarm_msgs.msg import (
-    RobotState, SwarmEvent, TaskAward, Treatment)
+    Bid, RobotState, SwarmEvent, TaskAward, Treatment)
 
-# Fixed by analysis/score_run.py. One row per treatment, no aggregation:
-# aggregating here is what would force the threshold sweep back into simulation.
+
 FIELDNAMES = ["t_s", "robot_id", "task_id", "x", "y", "confidence"]
 
-# events.csv sits beside treatments.csv and carries the contention record:
-# re-announcements with their cause, abandonments, split-brain observations,
-# and the awards that form the denominator for any rate derived from them.
-#
-# One row per OBSERVATION. A single split-brain is reported independently by
-# every allocator that holds the task, so counting rows overstates the event
-# count by up to n_robots. De-duplicate on (event, task_id, round) in the
-# scorer; the observer spread is itself a message-loss indicator.
+
 EVENT_FIELDNAMES = [
     "t_s",
     "event",
@@ -41,10 +33,21 @@ EVENT_FIELDNAMES = [
     "detail",
 ]
 
-# One row per robot per pose_period_s, lifted from the RobotState heartbeat
-# the energy monitor already publishes. Used by analysis/replay.py to draw
-# real tracks instead of interpolating between treatment positions.
+
 POSE_FIELDNAMES = ["t_s", "robot_id", "x", "y", "yaw"]
+
+
+BID_FIELDNAMES = [
+    "t_s",
+    "task_id",
+    "round",
+    "robot_id",
+    "utility",
+    "travel_cost_m",
+    "energy_cost_j",
+    "remaining_energy_j",
+    "feasible",
+]
 
 EVENT_NAMES = {
     SwarmEvent.EVENT_REANNOUNCE: "reannounce",
@@ -58,7 +61,7 @@ def _stamp_s(header) -> float:
 
 
 class TreatmentLogger(Node):
-    """Writes treatments.csv and events.csv, and supervises the run.
+    """Writes treatments, events, poses and bids, and supervises the run.
 
     One instance per run, not per robot: a single writer avoids interleaved
     partial rows. Each row is flushed on arrival so that a run killed by a
@@ -80,20 +83,10 @@ class TreatmentLogger(Node):
         super().__init__("treatment_logger")
 
         self.declare_parameter("out_csv", "/tmp/treatments.csv")
-        # Empty means "events.csv beside treatments.csv", so no launch file
-        # needs to know about this file.
         self.declare_parameter("events_csv", "")
-        # Seconds between logged poses per robot. The heartbeat is 5 Hz;
-        # 0.5 s is plenty for a replay and keeps the file small.
         self.declare_parameter("pose_period_s", 0.5)
-        # Zero disables termination entirely and the node runs until Ctrl-C.
         self.declare_parameter("n_robots", 0)
-        # Must exceed the longest gap a robot can sit idle mid-mission. A robot
-        # that has swept its lanes goes idle between awards, so this needs to
-        # outlast the allocator's bid window plus a detour: 30 s is roughly
-        # detour_timeout_s and has margin over bid_window_s + award_grace_s.
         self.declare_parameter("quiet_period_s", 30.0)
-        # Backstop for a wedged run. Zero disables. In sim-time seconds.
         self.declare_parameter("max_mission_s", 3600.0)
 
         path = self.get_parameter("out_csv").value
@@ -133,16 +126,24 @@ class TreatmentLogger(Node):
         self.pose_period_s = float(self.get_parameter("pose_period_s").value)
         self.last_pose_s = {}
 
+        bids_path = os.path.join(directory or ".", "bids.csv")
+        self.bids_file = open(bids_path, "w", newline="")
+        self.bids_writer = csv.DictWriter(
+            self.bids_file, fieldnames=BID_FIELDNAMES)
+        self.bids_writer.writeheader()
+        self.bids_file.flush()
+        self.bid_rows = 0
+
         self.create_subscription(Treatment, "/treatments", self.on_treatment, 50)
         self.create_subscription(RobotState, "/robot_states", self.on_state, 50)
         self.create_subscription(SwarmEvent, "/swarm_events", self.on_event, 50)
-        # The award stream is the denominator. Only the winning allocator
-        # publishes an award, so one row here is one awarded (task, round).
         self.create_subscription(TaskAward, "/task_awards", self.on_award, 50)
+        self.create_subscription(Bid, "/bids", self.on_bid, 200)
 
         self.get_logger().info(f"writing treatments to {path}")
         self.get_logger().info(f"writing events to {events_path}")
         self.get_logger().info(f"writing poses to {poses_path}")
+        self.get_logger().info(f"writing bids to {bids_path}")
 
         # ------------------------------------------------------- supervision
         self.finished = False
@@ -270,8 +271,6 @@ class TreatmentLogger(Node):
         })
 
     def on_award(self, m: TaskAward):
-        # Position is not carried on TaskAward; task_id joins to the
-        # announcement and to treatments.csv, which is enough for scoring.
         self._write_event({
             "t_s": f"{_stamp_s(m.header):.3f}",
             "event": "award",
@@ -288,9 +287,25 @@ class TreatmentLogger(Node):
             "detail": f"utility={m.winning_utility:.4f}",
         })
 
+    def on_bid(self, m: Bid):
+        self.bids_writer.writerow({
+            "t_s": f"{_stamp_s(m.header):.3f}",
+            "task_id": m.task_id,
+            "round": m.round,
+            "robot_id": m.robot_id,
+            "utility": f"{m.utility:.9g}",
+            "travel_cost_m": f"{m.travel_cost_m:.9g}",
+            "energy_cost_j": f"{m.energy_cost_j:.9g}",
+            "remaining_energy_j": f"{m.remaining_energy_j:.9g}",
+            "feasible": int(bool(m.feasible)),
+        })
+        self.bids_file.flush()
+        self.bid_rows += 1
+
     def destroy_node(self):
         self.get_logger().info(f"wrote {self.rows} treatments")
         self.get_logger().info(f"wrote {self.pose_rows} poses")
+        self.get_logger().info(f"wrote {self.bid_rows} bids")
         summary = ", ".join(
             f"{k}={v}" for k, v in sorted(self.event_counts.items()))
         self.get_logger().info(f"wrote {self.event_rows} events ({summary})")
@@ -304,24 +319,21 @@ class TreatmentLogger(Node):
                 try:
                     self.poses_file.close()
                 finally:
-                    super().destroy_node()
+                    try:
+                        self.bids_file.close()
+                    finally:
+                        super().destroy_node()
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = TreatmentLogger()
     try:
-        # Spun a slice at a time rather than with rclpy.spin(), so that the
-        # supervisor can end the run from inside a timer callback without
-        # tearing down the context from within that callback.
         while rclpy.ok() and not node.finished:
             rclpy.spin_once(node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
-        # After SIGINT the context is already invalid; shutting down again
-        # raises and the process exits non-zero, which run_batch would read as
-        # a failed run.
         node.destroy_node()
         rclpy.try_shutdown()
 
