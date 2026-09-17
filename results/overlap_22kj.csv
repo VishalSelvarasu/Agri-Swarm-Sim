@@ -1,0 +1,5 @@
+run,mode,capacity_j,auctions,contested,disagree,disagree_rate,early_rate,late_rate,extra_m,own_mode_match,logged_match,unknown_energy_bids
+diag_s0_n4_distance_r1,distance,22000.0,180,180,0,0.0000,0.0000,0.0000,0.00,1.0000,1.0000,15
+diag_s0_n4_energy_aware_r1,energy_aware,22000.0,182,182,0,0.0000,0.0000,0.0000,0.00,1.0000,1.0000,0
+diag_s1_n4_distance_r1,distance,22000.0,221,221,3,0.0136,0.0000,0.0270,24.22,1.0000,1.0000,0
+diag_s1_n4_energy_aware_r1,energy_aware,22000.0,232,232,6,0.0259,0.0000,0.0517,6.69,1.0000,1.0000,1
